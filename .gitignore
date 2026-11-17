@@ -1,0 +1,18 @@
+# Dataset files are large and have their own license, so they never go into git.
+# We keep the empty folder (via .gitkeep) so the layout is obvious after cloning.
+data/*
+!data/.gitkeep
+
+# Python environment and caches (rebuilt from pyproject.toml / uv.lock)
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Trained model weights and other generated outputs
+*.pt
+*.pth
+outputs/
+
+# macOS
+.DS_Store
