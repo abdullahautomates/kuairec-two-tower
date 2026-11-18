@@ -12,6 +12,7 @@ pair from group B. 0.5 = can't tell the groups apart; 1.0 = perfect.
 Run:  uv run python src/diagnose_model.py hardneg     (or: inbatch)
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -41,11 +42,15 @@ def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     user_codes, feature_sizes = load_user_features()
     video_tags, n_tag_codes = load_video_tags()
+    name = sys.argv[1] if len(sys.argv) > 1 else "hardneg"
+    print(f"model: outputs/{name}.pt")
+    # The run's settings are saved next to the model; older runs (before the
+    # "IDs only" option existed) always used the features.
+    config = json.loads((ROOT / "outputs" / f"{name}.json").read_text()).get("config", {})
     model = TwoTower(len(user_codes), feature_sizes, user_codes,
-                     len(video_tags), n_tag_codes, video_tags)
-    variant = sys.argv[1] if len(sys.argv) > 1 else "hardneg"
-    print(f"model: outputs/{variant}.pt")
-    model.load_state_dict(torch.load(ROOT / "outputs" / f"{variant}.pt"))
+                     len(video_tags), n_tag_codes, video_tags,
+                     use_features=config.get("use_features", True))
+    model.load_state_dict(torch.load(ROOT / "outputs" / f"{name}.pt"))
     model.to(device).eval()
 
     @torch.no_grad()

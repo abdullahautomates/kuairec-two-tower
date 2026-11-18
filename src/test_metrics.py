@@ -51,3 +51,27 @@ check("user with no likes skipped",
       mean_recall_at_k({1: ["A"], 2: ["B"]}, {1: {"A"}, 2: set()}, 1), 1.0)
 
 print("\nall checks passed")
+
+# --- per-user AUC, checked by hand ---
+import numpy as np
+
+from metrics import mean_user_auc, user_auc
+
+# One user, four videos. Scores 0.9, 0.8, 0.3, 0.1; liked = 1st and 3rd.
+# Pairs (liked vs not liked): 0.9>0.8 win, 0.9>0.1 win, 0.3<0.8 lose, 0.3>0.1 win
+# -> 3 wins out of 4 = 0.75
+scores = np.array([[0.9, 0.8, 0.3, 0.1]])
+liked_grid = np.array([[True, False, True, False]])
+check("AUC worked example", user_auc(scores, liked_grid)[0], 0.75)
+check("AUC perfect", user_auc(np.array([[3.0, 2.0, 1.0]]),
+                              np.array([[True, False, False]]))[0], 1.0)
+check("AUC all wrong", user_auc(np.array([[1.0, 2.0, 3.0]]),
+                                np.array([[True, False, False]]))[0], 0.0)
+# A tie between a liked and a not-liked video counts as half a win.
+check("AUC tie", user_auc(np.array([[0.5, 0.5]]), np.array([[True, False]]))[0], 0.5)
+# A user who liked nothing has no pairs to compare and is skipped in the average.
+two_users = np.array([[0.9, 0.1], [0.9, 0.1]])
+two_liked = np.array([[True, False], [False, False]])
+check("AUC skips users with no likes", mean_user_auc(two_users, two_liked), 1.0)
+
+print("\nall AUC checks passed")

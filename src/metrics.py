@@ -9,7 +9,16 @@ liked only 4 videos, even a perfect top-10 can contain at most 4 hits.
 
 The final score is the average over users, so every user counts equally
 (heavy users with many likes don't dominate).
+
+A second, steadier score (added in step 6) is per-user AUC: for one user, take
+one video they liked and one they didn't; how often does the method score the
+liked one higher? 0.5 = coin flip, 1.0 = always. It uses every candidate video,
+not just the top 10, so it moves much less from run to run. Recall@10 stays
+the headline score; AUC is for comparing versions.
 """
+
+import numpy as np
+import pandas as pd
 
 
 def recall_at_k_for_user(ranked_videos, liked_videos, k):
@@ -64,12 +73,43 @@ def split_test_users(test, seed=0):
     The final group never influences a decision, so its score is honest.
     A fixed seed gives the same split every run, in every step.
     """
-    import numpy as np  # local import keeps the scorer itself dependency-free
-
-    users = np.array(sorted(test["user_id"].unique()))
+    users =np.array(sorted(test["user_id"].unique()))
     shuffled = np.random.default_rng(seed).permutation(users)
     half = len(shuffled) // 2
     return set(shuffled[:half].tolist()), set(shuffled[half:].tolist())
+
+
+def liked_matrix(liked_by_user, users, candidates):
+    """Grid of True/False: one row per user, one column per candidate video.
+    True = that user liked that video."""
+    column = {video: j for j, video in enumerate(candidates)}
+    grid = np.zeros((len(users), len(candidates)), dtype=bool)
+    for i, user in enumerate(users):
+        for video in liked_by_user[user]:
+            if video in column:
+                grid[i, column[video]] = True
+    return grid
+
+
+def user_auc(scores, liked):
+    """Per-user AUC for each row. scores and liked are [n_users, n_videos] grids.
+
+    Trick: rank each user's videos by score (1 = lowest). If liked videos sit
+    at high ranks, the AUC is high. Tied scores share the average rank, so a
+    tie between a liked and a not-liked video counts as half a win.
+    Users who liked everything or nothing get NaN (no pairs to compare).
+    """
+    ranks = pd.DataFrame(scores).rank(axis=1).to_numpy()
+    n_liked = liked.sum(axis=1)
+    n_not = liked.shape[1] - n_liked
+    wins = (ranks * liked).sum(axis=1) - n_liked * (n_liked + 1) / 2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return wins / (n_liked * n_not)
+
+
+def mean_user_auc(scores, liked):
+    """Average per-user AUC, skipping users with no pairs to compare."""
+    return float(np.nanmean(user_auc(scores, liked)))
 
 
 if __name__ == "__main__":
