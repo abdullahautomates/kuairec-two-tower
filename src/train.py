@@ -10,17 +10,23 @@ Training, in short:
     little in the direction that lowers the loss. Repeat.
   - One EPOCH = one pass over all 3.4M liked pairs.
 
-Two variants:
-  inbatch : wrong answers = the other videos in the batch only (run 1).
-            The model learns what users get shown, not what they enjoy.
-  hardneg : additionally, for each liked pair, one video the SAME user
-            watched but did NOT like ("hard negative"). The model must rank
-            enjoyed above skipped among videos the user actually saw, which
-            is what the fully observed test measures.
+Four variants. They differ in what counts as a "wrong answer" in training:
+  inbatch : the other videos in the batch only (run 1). The model learns
+            what users get shown, not what they enjoy.
+  hardneg : in-batch, plus ONE video the same user watched but did not like,
+            mixed into the same big list of wrong answers (run 2). Right
+            idea, but that one video is 1 of ~8,000, so it barely counts.
+  mixed   : two separate questions per example, added together:
+            (a) in-batch, as in run 1;
+            (b) "liked vs skipped": the liked video against 8 videos the same
+                user watched but skipped, and nothing else.
+  skipped : only question (b). Every wrong answer is a video the user really
+            watched and skipped, which is what the fully observed test measures.
 
 Honesty rule: after each epoch we score on the CHOOSING group and keep the
-best epoch. The FINAL group is only scored when --report-final is passed,
-which is for results that go in the README, not for experiments.
+best epoch (by per-user AUC, which is steadier than recall@10). The FINAL
+group is only scored when --report-final is passed, which is for results
+that go in the README, not for experiments.
 
 Run:  uv run python src/train.py --variant hardneg --report-final
 
@@ -56,11 +62,13 @@ LEARNING_RATE = 1e-3
 SEED = 0
 KS = [10, 50, 100]
 SHORT_SECONDS = 5  # the short-video check agreed in step 5
+N_SKIPPED = 8      # skipped videos per example in the "liked vs skipped" question
 
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=["inbatch", "hardneg"], default="hardneg")
+    p.add_argument("--variant", choices=["inbatch", "hardneg", "mixed", "skipped"],
+                   default="hardneg")
     p.add_argument("--no-features", action="store_true",
                    help="IDs only: drop user features and video tags")
     p.add_argument("--batch-size", type=int, default=4096)
@@ -98,11 +106,27 @@ def evaluate(model, users, candidates, liked_by_user, device):
     return result, recs
 
 
-def sample_hard_negatives(users, neg_videos, neg_start, neg_count):
-    """For each user in the batch, one random video they watched but didn't like."""
-    offset = (torch.rand(len(users), device=users.device) * neg_count[users]).long()
-    index = (neg_start[users] + offset).clamp(max=len(neg_videos) - 1)
+def sample_skipped(users, n, neg_videos, neg_start, neg_count):
+    """For each user in the batch, n random videos they watched but didn't
+    like. Returns video IDs shaped [batch, n]."""
+    offset = (torch.rand(len(users), n, device=users.device)
+              * neg_count[users][:, None]).long()
+    index = (neg_start[users][:, None] + offset).clamp(max=len(neg_videos) - 1)
     return neg_videos[index]
+
+
+def skipped_loss(user_vecs, pos_vecs, skip_vecs):
+    """The "liked vs skipped" question.
+
+    For each row: one liked video and N_SKIPPED videos the same user watched
+    but skipped. Softmax over just those videos; the liked one should score
+    highest. Nothing the user never saw is involved.
+    """
+    liked = (user_vecs * pos_vecs).sum(dim=1, keepdim=True)        # [B, 1]
+    skipped = (user_vecs[:, None, :] * skip_vecs).sum(dim=2)       # [B, N_SKIPPED]
+    logits = torch.cat([liked, skipped], dim=1)                    # right answer = column 0
+    targets = torch.zeros(len(user_vecs), dtype=torch.long, device=logits.device)
+    return F.cross_entropy(logits, targets)
 
 
 def batch_loss(user_vecs, pos_vecs, user_ids, pos_ids, neg_vecs=None, neg_ids=None):
@@ -151,10 +175,15 @@ def main():
     candidates = [int(v) for v in candidate_videos(test)]
     choosing, final = split_test_users(test)
     n_pairs = len(pair_users)
-    n_columns = args.batch_size * (2 if args.variant == "hardneg" else 1)
     print(f"training pairs (liked): {n_pairs:,}  batches per epoch: "
           f"{(n_pairs + args.batch_size - 1) // args.batch_size:,}")
-    print(f"loss of pure guessing among {n_columns:,} videos: {math.log(n_columns):.2f}")
+    # What the loss would be if the model guessed at random. Useful as a
+    # yardstick: a loss close to this means the model has learned very little.
+    guessing = {"inbatch": math.log(args.batch_size),
+                "hardneg": math.log(2 * args.batch_size),
+                "skipped": math.log(N_SKIPPED + 1),
+                "mixed": math.log(args.batch_size) + math.log(N_SKIPPED + 1)}
+    print(f"loss of pure guessing: {guessing[args.variant]:.2f}")
 
     # --- model ---
     model = TwoTower(len(user_codes), feature_sizes, user_codes,
@@ -164,16 +193,17 @@ def main():
     print(f"model weights (learnable numbers): {n_weights:,}")
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     pair_users, pair_videos = pair_users.to(device), pair_videos.to(device)
-    if args.variant == "hardneg":
+    if args.variant != "inbatch":
         neg_videos, neg_start, neg_count = (
             t.to(device) for t in load_hard_negatives(len(user_codes)))
+        assert int((neg_count == 0).sum()) == 0, "a user has no skipped videos"
 
     scores, _ = evaluate(model, choosing, candidates, liked_by_user, device)
     print(f"before training (random weights), choosing group: "
           f"recall@10 {scores[10]:.3f}  AUC {scores['auc']:.3f}")
 
     # --- training ---
-    history, best = [], {"recall@10": -1}
+    history, best = [], {"auc": -1}
     for epoch in range(1, args.epochs + 1):
         start = time.time()
         order = torch.randperm(n_pairs, device=device)     # shuffle each epoch
@@ -181,12 +211,19 @@ def main():
         for i in range(0, n_pairs, args.batch_size):
             idx = order[i:i + args.batch_size]
             u, v = pair_users[idx], pair_videos[idx]
-            if args.variant == "hardneg":
-                n = sample_hard_negatives(u, neg_videos, neg_start, neg_count)
-                loss = batch_loss(model.user_tower(u), model.video_tower(v), u, v,
-                                  model.video_tower(n), n)
-            else:
-                loss = batch_loss(model.user_tower(u), model.video_tower(v), u, v)
+            user_vecs, pos_vecs = model.user_tower(u), model.video_tower(v)
+            if args.variant == "inbatch":
+                loss = batch_loss(user_vecs, pos_vecs, u, v)
+            elif args.variant == "hardneg":
+                n = sample_skipped(u, 1, neg_videos, neg_start, neg_count)[:, 0]
+                loss = batch_loss(user_vecs, pos_vecs, u, v, model.video_tower(n), n)
+            else:  # "mixed" or "skipped"
+                s = sample_skipped(u, N_SKIPPED, neg_videos, neg_start, neg_count)
+                skip_vecs = model.video_tower(s.reshape(-1)).reshape(
+                    len(u), N_SKIPPED, -1)                          # [B, N_SKIPPED, 64]
+                loss = skipped_loss(user_vecs, pos_vecs, skip_vecs)
+                if args.variant == "mixed":
+                    loss = loss + batch_loss(user_vecs, pos_vecs, u, v)
             optimizer.zero_grad()   # clear the previous batch's nudges
             loss.backward()         # work out which way to nudge every weight
             optimizer.step()        # nudge them
@@ -200,13 +237,13 @@ def main():
         print(f"epoch {epoch:2d}  loss {row['loss']:.3f}  choosing: recall@10 "
               f"{scores[10]:.3f}  @50 {scores[50]:.3f}  AUC {scores['auc']:.3f}  "
               f"({row['seconds']:.0f}s)")
-        if scores[10] > best["recall@10"]:
-            best = {"epoch": epoch, "recall@10": scores[10],
+        if scores["auc"] > best["auc"]:
+            best = {"epoch": epoch, "auc": scores["auc"], "recall@10": scores[10],
                     "state": copy.deepcopy(model.state_dict())}
 
     # --- report, using the best epoch (chosen on the choosing group) ---
-    print(f"\nbest epoch on the choosing group: {best['epoch']} "
-          f"(recall@10 {best['recall@10']:.3f})")
+    print(f"\nbest epoch on the choosing group (by AUC): {best['epoch']} "
+          f"(AUC {best['auc']:.3f}, recall@10 {best['recall@10']:.3f})")
     model.load_state_dict(best["state"])
     OUT.mkdir(exist_ok=True)
     torch.save(best["state"], OUT / f"{name}.pt")
