@@ -56,6 +56,22 @@ def candidate_videos(test):
     return sorted(test["video_id"].unique())
 
 
+def split_test_users(test, seed=0):
+    """Randomly split test users into a CHOOSING group and a FINAL group.
+
+    Choosing group (validation): compare versions / settings and pick one.
+    Final group: used only to report the score of what was picked.
+    The final group never influences a decision, so its score is honest.
+    A fixed seed gives the same split every run, in every step.
+    """
+    import numpy as np  # local import keeps the scorer itself dependency-free
+
+    users = np.array(sorted(test["user_id"].unique()))
+    shuffled = np.random.default_rng(seed).permutation(users)
+    half = len(shuffled) // 2
+    return set(shuffled[:half].tolist()), set(shuffled[half:].tolist())
+
+
 if __name__ == "__main__":
     # Tiny demo:  uv run python src/metrics.py
     recs = {1: ["A", "B", "C"], 2: ["D", "E", "F"]}
