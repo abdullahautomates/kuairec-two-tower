@@ -16,3 +16,6 @@ outputs/
 
 # macOS
 .DS_Store
+
+# Local notes
+notes/
