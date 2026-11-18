@@ -47,5 +47,11 @@ data only). With "watched to the end" as the label, recommending the 10
 shortest videos to everyone scored recall@10 = 0.90 against 0.32 for random
 picks. With the length-aware label, the same shortcut scores 0.29 against 0.23.
 
+**Known remaining imperfection:** videos under 5 seconds (38 of the 3,327 test
+videos) are still slightly easier to count as liked (about 30% of users vs 23%
+for the rest). Their length groups have the least training data behind them.
+The model's results are also reported with those videos removed, to show
+whether it benefits from this.
+
 _Work in progress. Results, setup instructions, and sources will be added as
 the project is built._
