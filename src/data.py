@@ -32,16 +32,26 @@ USER_COLUMNS = (
 MAX_TAGS = 4  # no video has more than 4 tags
 
 
-def load_training_pairs():
-    """All liked (user, video) pairs from the training table, as two tensors."""
-    train = pd.read_parquet(PROCESSED / "train.parquet",
-                            columns=["user_id", "video_id", "liked"])
+def read_train_table():
+    """The training table: one row per (user, video) pair, with liked = 1 or 0."""
+    return pd.read_parquet(PROCESSED / "train.parquet",
+                           columns=["user_id", "video_id", "liked"])
+
+
+def load_training_pairs(train=None):
+    """All liked (user, video) pairs from the training table, as two tensors.
+
+    train: pass your own table to train on something other than the full file
+    (epoch_check.py hides some pairs this way). Default: the full table.
+    """
+    if train is None:
+        train = read_train_table()
     liked = train[train["liked"] == 1]
     return (torch.tensor(liked["user_id"].to_numpy(), dtype=torch.long),
             torch.tensor(liked["video_id"].to_numpy(), dtype=torch.long))
 
 
-def load_hard_negatives(n_users):
+def load_hard_negatives(n_users, train=None):
     """Every user's watched-but-NOT-liked videos, packed for fast sampling.
 
     Returns (videos, start, count): user u's not-liked videos are
@@ -49,8 +59,8 @@ def load_hard_negatives(n_users):
     where each user's block starts lets us pick a random one per user on the
     GPU without any Python loops.
     """
-    train = pd.read_parquet(PROCESSED / "train.parquet",
-                            columns=["user_id", "video_id", "liked"])
+    if train is None:
+        train = read_train_table()
     neg = train[train["liked"] == 0].sort_values("user_id")
     count = neg.groupby("user_id").size().reindex(range(n_users), fill_value=0)
     start = count.cumsum() - count  # where each user's block begins

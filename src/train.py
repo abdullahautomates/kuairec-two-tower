@@ -35,6 +35,10 @@ Options for experiments (scored on the choosing group only):
   --batch-size N   pairs per batch (default 4096)
   --epochs N       passes over the data (default 10)
   --name NAME      file name for the saved model and results (default: variant)
+  --seed N         starting point for the random numbers (default 0). Training
+                   starts from random weights and shuffles the data randomly;
+                   the seed fixes both, so a different seed is a fair "rerun"
+                   that shows how much a score moves by luck alone.
 """
 
 import argparse
@@ -52,7 +56,8 @@ import torch.nn.functional as F
 from data import (load_hard_negatives, load_training_pairs, load_user_features,
                   load_video_tags)
 from metrics import (candidate_videos, liked_matrix, load_liked_by_user,
-                     mean_recall_at_k, mean_user_auc, split_test_users)
+                     mean_ndcg_at_k, mean_recall_at_k, mean_user_auc,
+                     split_test_users)
 from model import TwoTower
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -74,6 +79,7 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--name", default=None, help="name for saved files")
+    p.add_argument("--seed", type=int, default=SEED)
     p.add_argument("--report-final", action="store_true",
                    help="score the FINAL group (only for results we will report)")
     return p.parse_args()
@@ -88,8 +94,8 @@ def pick_device():
 def evaluate(model, users, candidates, liked_by_user, device):
     """Score every user against every candidate, then grade.
 
-    Returns ({10: recall@10, 50: ..., 100: ..., "auc": per-user AUC},
-             {user: top-100 video IDs, best first}).
+    Returns ({10: recall@10, 50: ..., 100: ..., "auc": per-user AUC,
+              "ndcg@10": NDCG@10}, {user: top-100 video IDs, best first}).
     """
     users = sorted(users)
     model.eval()
@@ -103,6 +109,7 @@ def evaluate(model, users, candidates, liked_by_user, device):
     liked = {u: liked_by_user[u] for u in users}
     result = {k: mean_recall_at_k(recs, liked, k) for k in KS}
     result["auc"] = mean_user_auc(scores, liked_matrix(liked_by_user, users, candidates))
+    result["ndcg@10"] = mean_ndcg_at_k(recs, liked, 10)
     return result, recs
 
 
@@ -158,10 +165,10 @@ def main():
     args = parse_args()
     name = args.name or args.variant
     use_features = not args.no_features
-    torch.manual_seed(SEED)
+    torch.manual_seed(args.seed)
     device = pick_device()
     print(f"run: {name}   variant: {args.variant}   features: {use_features}   "
-          f"batch size: {args.batch_size}   device: {device}")
+          f"batch size: {args.batch_size}   seed: {args.seed}   device: {device}")
 
     # --- data ---
     pair_users, pair_videos = load_training_pairs()
@@ -232,7 +239,8 @@ def main():
         scores, _ = evaluate(model, choosing, candidates, liked_by_user, device)
         row = {"epoch": epoch, "loss": total_loss / n_batches,
                "recall@10": scores[10], "recall@50": scores[50],
-               "auc": scores["auc"], "seconds": time.time() - start}
+               "auc": scores["auc"], "ndcg@10": scores["ndcg@10"],
+               "seconds": time.time() - start}
         history.append(row)
         print(f"epoch {epoch:2d}  loss {row['loss']:.3f}  choosing: recall@10 "
               f"{scores[10]:.3f}  @50 {scores[50]:.3f}  AUC {scores['auc']:.3f}  "
@@ -253,7 +261,7 @@ def main():
     group_scores, group_recs = evaluate(model, group, candidates, liked_by_user, device)
     print(f"\n{group_name.upper()} GROUP:  " +
           "   ".join(f"recall@{k}: {group_scores[k]:.3f}" for k in KS) +
-          f"   AUC: {group_scores['auc']:.3f}")
+          f"   AUC: {group_scores['auc']:.3f}   NDCG@10: {group_scores['ndcg@10']:.3f}")
 
     # Short-video check 1: share of top-10 picks under 5 seconds.
     seconds = test.groupby("video_id")["video_duration"].first() / 1000
@@ -285,9 +293,10 @@ def main():
     results = {
         "name": name,
         "config": {"variant": args.variant, "use_features": use_features,
-                   "batch_size": args.batch_size, "epochs": args.epochs},
+                   "batch_size": args.batch_size, "epochs": args.epochs,
+                   "seed": args.seed},
         group_name: {**{f"recall@{k}": group_scores[k] for k in KS},
-                     "auc": group_scores["auc"]},
+                     "auc": group_scores["auc"], "ndcg@10": group_scores["ndcg@10"]},
         "best_epoch": best["epoch"], "history": history,
         "short_share_top10": short_share, "recall@10_without_short": no_short[10],
         "distinct_videos_top10": distinct,

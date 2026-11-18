@@ -74,4 +74,48 @@ two_users = np.array([[0.9, 0.1], [0.9, 0.1]])
 two_liked = np.array([[True, False], [False, False]])
 check("AUC skips users with no likes", mean_user_auc(two_users, two_liked), 1.0)
 
+
+# AUC with a "counted" mask: same worked example plus a fifth video that the
+# user has no answer for. It must be ignored, so the result is still 0.75.
+# (If it were wrongly counted as liked, the result would be 5/6 = 0.833.)
+scores5 = np.array([[0.9, 0.8, 0.3, 0.1, 0.95]])
+liked5 = np.array([[True, False, True, False, True]])
+counted5 = np.array([[True, True, True, True, False]])
+check("AUC ignores videos that are not counted",
+      user_auc(scores5, liked5, counted5)[0], 0.75)
+check("AUC without the mask (for contrast)", user_auc(scores5, liked5)[0], 5 / 6)
+
 print("\nall AUC checks passed")
+
+# --- NDCG@k, checked by hand ---
+# Worth of a hit by position: 1 -> 1/log2(2) = 1.000, 2 -> 1/log2(3) = 0.631,
+# 3 -> 1/log2(4) = 0.500.
+import math
+
+from metrics import mean_ndcg_at_k, ndcg_at_k_for_user
+
+P1, P2, P3 = 1.0, 1 / math.log2(3), 0.5
+# Same worked example as recall (k = 3):
+#   user 1: recommended A,B,C; liked A,C,F,G -> hits at positions 1 and 3 = 1.5
+#           best possible = 3 hits at positions 1,2,3 = 2.131 -> 1.5 / 2.131 = 0.704
+#   user 2: no hits -> 0
+#   user 3: recommended G,A,H; liked H,G -> hits at positions 1 and 3 = 1.5
+#           best possible = 2 hits at positions 1,2 = 1.631 -> 1.5 / 1.631 = 0.920
+check("NDCG worked example, user 1", ndcg_at_k_for_user(recs[1], liked[1], 3),
+      (P1 + P3) / (P1 + P2 + P3))
+check("NDCG worked example, user 2", ndcg_at_k_for_user(recs[2], liked[2], 3), 0.0)
+check("NDCG worked example, user 3", ndcg_at_k_for_user(recs[3], liked[3], 3),
+      (P1 + P3) / (P1 + P2))
+check("NDCG worked example, average", mean_ndcg_at_k(recs, liked, 3),
+      ((P1 + P3) / (P1 + P2 + P3) + 0 + (P1 + P3) / (P1 + P2)) / 3)
+# Unlike recall, position matters: the same single hit is worth more at the top.
+check("NDCG hit at position 1", ndcg_at_k_for_user(["A", "X", "Y"], {"A", "B"}, 3),
+      P1 / (P1 + P2))
+check("NDCG hit at position 3 (lower)", ndcg_at_k_for_user(["X", "Y", "A"], {"A", "B"}, 3),
+      P3 / (P1 + P2))
+check("NDCG perfect list", ndcg_at_k_for_user(["A", "B"], {"A", "B", "C"}, 2), 1.0)
+check("NDCG duplicate recommendation", ndcg_at_k_for_user(["A", "A", "X"], {"A", "B"}, 3),
+      P1 / (P1 + P2))
+assert ndcg_at_k_for_user(["A"], set(), 3) is None
+
+print("\nall NDCG checks passed")
