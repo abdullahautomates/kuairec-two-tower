@@ -6,7 +6,7 @@ pair from group B. 0.5 = can't tell the groups apart; 1.0 = perfect.
   1. EXPOSURE: watched vs never-watched pairs (training data).
      High AUC = the model learned what users get shown / choose to watch.
   2. ENGAGEMENT: liked vs watched-but-not-liked (training data, and the
-     final test group). High AUC = the model learned what users enjoy among
+     choosing test group). High AUC = the model learned what users enjoy among
      the videos they saw. This is what the test measures.
 
 Run:  uv run python src/diagnose_model.py
@@ -77,14 +77,15 @@ def main():
                     pair_scores(not_liked["user_id"].to_numpy(), not_liked["video_id"].to_numpy()))
     print(f"2. ENGAGEMENT liked vs watched-not-liked (train):           AUC {eng_train:.3f}")
 
-    # 2b. Engagement on the final test group (everyone saw everything).
+    # 2b. Engagement on the CHOOSING test group (everyone saw everything).
+    # Not the final group: that one is only for reporting results.
     test = pd.read_parquet(PROCESSED / "test.parquet")
-    _, final = split_test_users(test)
-    t = test[test["user_id"].isin(final)].sample(SAMPLE, random_state=0)
+    choosing, _ = split_test_users(test)
+    t = test[test["user_id"].isin(choosing)].sample(SAMPLE, random_state=0)
     tl, tn = t[t["liked"] == 1], t[t["liked"] == 0]
     eng_test = auc(pair_scores(tl["user_id"].to_numpy(), tl["video_id"].to_numpy()),
                    pair_scores(tn["user_id"].to_numpy(), tn["video_id"].to_numpy()))
-    print(f"   ENGAGEMENT liked vs not-liked (final test group):        AUC {eng_test:.3f}")
+    print(f"   ENGAGEMENT liked vs not-liked (choosing test group):     AUC {eng_test:.3f}")
 
 
 if __name__ == "__main__":
