@@ -10,12 +10,21 @@ Training, in short:
     little in the direction that lowers the loss. Repeat.
   - One EPOCH = one pass over all 3.4M liked pairs.
 
+Two variants:
+  inbatch : wrong answers = the other videos in the batch only (run 1).
+            The model learns what users get shown, not what they enjoy.
+  hardneg : additionally, for each liked pair, one video the SAME user
+            watched but did NOT like ("hard negative"). The model must rank
+            enjoyed above skipped among videos the user actually saw, which
+            is what the fully observed test measures.
+
 Honesty rule: after each epoch we score on the CHOOSING group and keep the
 best epoch. The FINAL group is scored once, at the end, for reporting.
 
-Run:  uv run python src/train.py
+Run:  uv run python src/train.py --variant hardneg     (or --variant inbatch)
 """
 
+import argparse
 import copy
 import json
 import time
@@ -26,7 +35,8 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
-from data import load_training_pairs, load_user_features, load_video_tags
+from data import (load_hard_negatives, load_training_pairs, load_user_features,
+                  load_video_tags)
 from metrics import (candidate_videos, load_liked_by_user, mean_recall_at_k,
                      split_test_users)
 from model import TwoTower
@@ -66,24 +76,45 @@ def evaluate(model, users, candidates, liked_by_user, device):
     return {k: mean_recall_at_k(recs, liked, k) for k in KS}, recs
 
 
-def in_batch_loss(user_vecs, video_vecs, user_ids, video_ids):
-    """Softmax cross-entropy where row i's right answer is column i."""
-    logits = user_vecs @ video_vecs.T                      # [B, B] scores
+def sample_hard_negatives(users, neg_videos, neg_start, neg_count):
+    """For each user in the batch, one random video they watched but didn't like."""
+    offset = (torch.rand(len(users), device=users.device) * neg_count[users]).long()
+    index = (neg_start[users] + offset).clamp(max=len(neg_videos) - 1)
+    return neg_videos[index]
+
+
+def batch_loss(user_vecs, pos_vecs, user_ids, pos_ids, neg_vecs=None, neg_ids=None):
+    """Softmax cross-entropy where row i's right answer is column i.
+
+    Columns 0..B-1 are the batch's liked videos (in-batch negatives).
+    If hard negatives are given, columns B..2B-1 are one watched-but-not-liked
+    video per row's user; each row must beat its own user's skipped video too.
+    """
+    logits = user_vecs @ pos_vecs.T                        # [B, B] scores
     # Don't count a column as a "wrong answer" if it is really a right one:
     # the same video appearing twice in the batch, or another video liked by
     # the same user. Setting its score to -inf removes it from the softmax.
-    same_video = video_ids[:, None] == video_ids[None, :]
+    same_video = pos_ids[:, None] == pos_ids[None, :]
     same_user = user_ids[:, None] == user_ids[None, :]
     not_self = ~torch.eye(len(user_ids), dtype=torch.bool, device=logits.device)
     logits = logits.masked_fill((same_video | same_user) & not_self, float("-inf"))
+    if neg_vecs is not None:
+        neg_logits = user_vecs @ neg_vecs.T                # [B, B] scores
+        # Another user's skipped video might be this row's liked video: drop it.
+        neg_logits = neg_logits.masked_fill(neg_ids[None, :] == pos_ids[:, None],
+                                            float("-inf"))
+        logits = torch.cat([logits, neg_logits], dim=1)    # [B, 2B]
     targets = torch.arange(len(user_ids), device=logits.device)
     return F.cross_entropy(logits, targets)
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--variant", choices=["inbatch", "hardneg"], default="hardneg")
+    variant = parser.parse_args().variant
     torch.manual_seed(SEED)
     device = pick_device()
-    print(f"device: {device}")
+    print(f"variant: {variant}   device: {device}")
 
     # --- data ---
     pair_users, pair_videos = load_training_pairs()
@@ -107,6 +138,11 @@ def main():
     print(f"model weights (learnable numbers): {n_weights:,}")
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     pair_users, pair_videos = pair_users.to(device), pair_videos.to(device)
+    if variant == "hardneg":
+        neg_videos, neg_start, neg_count = (
+            t.to(device) for t in load_hard_negatives(len(user_codes)))
+        print(f"hard negatives available: {len(neg_videos):,}; users with none: "
+              f"{int((neg_count == 0).sum())}")
 
     scores, _ = evaluate(model, choosing, candidates, liked_by_user, device)
     print(f"before training (random weights), choosing group recall@10: {scores[10]:.3f}")
@@ -120,7 +156,12 @@ def main():
         for i in range(0, n_pairs, BATCH_SIZE):
             idx = order[i:i + BATCH_SIZE]
             u, v = pair_users[idx], pair_videos[idx]
-            loss = in_batch_loss(model.user_tower(u), model.video_tower(v), u, v)
+            if variant == "hardneg":
+                n = sample_hard_negatives(u, neg_videos, neg_start, neg_count)
+                loss = batch_loss(model.user_tower(u), model.video_tower(v), u, v,
+                                  model.video_tower(n), n)
+            else:
+                loss = batch_loss(model.user_tower(u), model.video_tower(v), u, v)
             optimizer.zero_grad()   # clear the previous batch's nudges
             loss.backward()         # work out which way to nudge every weight
             optimizer.step()        # nudge them
@@ -142,7 +183,7 @@ def main():
           f"(recall@10 {best['recall@10']:.3f})")
     model.load_state_dict(best["state"])
     OUT.mkdir(exist_ok=True)
-    torch.save(best["state"], OUT / "two_tower.pt")
+    torch.save(best["state"], OUT / f"{variant}.pt")
 
     final_scores, final_recs = evaluate(model, final, candidates, liked_by_user, device)
     print("\nFINAL GROUP (report these):  " +
@@ -176,13 +217,14 @@ def main():
           f"(all candidates: {seconds.loc[candidates].median():.1f}s)")
 
     results = {
+        "variant": variant,
         "final": {f"recall@{k}": final_scores[k] for k in KS},
         "best_epoch": best["epoch"], "history": history,
         "short_share_top10": short_share, "recall@10_without_short": no_short[10],
         "distinct_videos_top10": distinct,
     }
-    (OUT / "step6_results.json").write_text(json.dumps(results, indent=2))
-    print(f"\nsaved model to {OUT / 'two_tower.pt'} and results to step6_results.json")
+    (OUT / f"{variant}.json").write_text(json.dumps(results, indent=2))
+    print(f"\nsaved model to outputs/{variant}.pt and results to outputs/{variant}.json")
 
 
 if __name__ == "__main__":

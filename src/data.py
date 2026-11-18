@@ -41,6 +41,24 @@ def load_training_pairs():
             torch.tensor(liked["video_id"].to_numpy(), dtype=torch.long))
 
 
+def load_hard_negatives(n_users):
+    """Every user's watched-but-NOT-liked videos, packed for fast sampling.
+
+    Returns (videos, start, count): user u's not-liked videos are
+    videos[start[u] : start[u] + count[u]]. Sorting by user and remembering
+    where each user's block starts lets us pick a random one per user on the
+    GPU without any Python loops.
+    """
+    train = pd.read_parquet(PROCESSED / "train.parquet",
+                            columns=["user_id", "video_id", "liked"])
+    neg = train[train["liked"] == 0].sort_values("user_id")
+    count = neg.groupby("user_id").size().reindex(range(n_users), fill_value=0)
+    start = count.cumsum() - count  # where each user's block begins
+    return (torch.tensor(neg["video_id"].to_numpy(), dtype=torch.long),
+            torch.tensor(start.to_numpy(), dtype=torch.long),
+            torch.tensor(count.to_numpy(), dtype=torch.long))
+
+
 def load_user_features():
     """Returns (codes, sizes).
 
