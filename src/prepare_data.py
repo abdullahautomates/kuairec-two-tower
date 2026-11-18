@@ -3,7 +3,9 @@
 Each row is one (user, video) pair with a label: liked = 1 or 0.
 
 The "liked" rule (option B, length-aware), agreed in step 3:
-  1. Split videos into 100 equal-size groups by length.
+  1. Split videos into groups of similar length: 100 equal-size groups, with
+     any group spanning more than 25% (longest vs shortest) cut further,
+     keeping at least 25 videos per group.
   2. Engagement of a pair = SUM of watch_ratio over all of that user's watches
      of that video (so rewatching counts).
   3. In each length group, the "bar" is the engagement only the top third of
@@ -31,6 +33,8 @@ RAW = ROOT / "data" / "raw" / "KuaiRec" / "data"
 OUT = ROOT / "data" / "processed"
 
 N_LENGTH_GROUPS = 100  # how finely to split videos by length
+MAX_GROUP_RATIO = 1.25 # longest video in a group at most 25% longer than shortest
+MIN_GROUP_VIDEOS = 25  # ...but never cut a group into pieces smaller than this
 TOP_SHARE = 1 / 3      # share of pairs in each length group that count as "liked"
 FINISHED = 1.0         # watch_ratio meaning "watched to the end" (used in check 1)
 
@@ -69,11 +73,47 @@ def check_grows_on_you(big):
 
 
 def length_group_edges(train):
-    """Boundaries that split the training VIDEOS into equal-size length groups."""
+    """Boundaries that split the training videos into groups of similar length.
+
+    Start with N_LENGTH_GROUPS groups holding equal numbers of videos. Long
+    videos are rare, so the last equal-size group stretched from 77s to 5 min,
+    and one bar can't be fair across that range (20% of 90s is easy, 20% of
+    5 min is hard). So any group whose longest video is more than
+    MAX_GROUP_RATIO times its shortest is cut into smaller pieces.
+
+    But each piece keeps at least MIN_GROUP_VIDEOS videos: in a group with
+    one video, "top third" would force that video to ~33% liked no matter how
+    good it is, which erases the very signal we want to measure.
+    """
     durations = train.groupby("video_id")["video_duration"].first()
     edges = np.unique(np.quantile(durations, np.linspace(0, 1, N_LENGTH_GROUPS + 1)))
+    refined = [edges[0]]
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        wanted = int(np.ceil(np.log(hi / lo) / np.log(MAX_GROUP_RATIO)))
+        in_group = durations[(durations > lo) & (durations <= hi)]
+        pieces = min(wanted, len(in_group) // MIN_GROUP_VIDEOS)
+        if pieces > 1:
+            # Cut at quantiles so every piece holds about the same number of videos.
+            cuts = np.quantile(in_group, np.linspace(0, 1, pieces + 1))[1:-1]
+            refined.extend(cuts)
+        refined.append(hi)
+    edges = np.array(refined)
     edges[0], edges[-1] = -np.inf, np.inf  # catch any video outside the training range
     return edges
+
+
+def print_group_sizes(train, edges):
+    """Show how many groups there are and the smallest ones (fewest examples)."""
+    group = pd.cut(train["video_duration"], edges, labels=False)
+    sizes = train.groupby(group).agg(videos=("video_id", "nunique"),
+                                     pairs=("video_id", "size"))
+    lo = np.maximum(edges[:-1], 0) / 1000
+    hi = edges[1:] / 1000
+    sizes["range"] = [f"{lo[g]:.1f}s-{hi[g]:.1f}s" for g in sizes.index]
+    print(f"length groups: {len(sizes)} (with training data)")
+    print("smallest groups by number of videos:")
+    print(sizes.nsmallest(6, "videos").to_string(
+        formatters={"pairs": "{:,}".format}))
 
 
 def build_train(big):
@@ -101,8 +141,9 @@ def add_liked_label(df, edges, bars):
 def check_short_video_effect(df, name):
     """Liked rate by video length. Should now be roughly flat."""
     seconds = df["video_duration"] / 1000
-    buckets = pd.cut(seconds, [0, 7, 15, 30, 60, np.inf],
-                     labels=["<7s", "7-15s", "15-30s", "30-60s", ">60s"])
+    buckets = pd.cut(seconds, [0, 7, 15, 30, 60, 90, 120, np.inf],
+                     labels=["<7s", "7-15s", "15-30s", "30-60s", "60-90s",
+                             "90-120s", ">120s"])
     rates = df.groupby(buckets, observed=True)["liked"].mean()
     print(f"{name}: " + "  ".join(f"{k} {v:.1%}" for k, v in rates.items()))
 
@@ -124,7 +165,9 @@ def main():
 
     # The bars come from TRAINING data only.
     edges = length_group_edges(train)
-    bars = train.groupby(pd.cut(train["video_duration"], edges, labels=False))[
+    section("LENGTH GROUPS")
+    print_group_sizes(train, edges)
+    bars =train.groupby(pd.cut(train["video_duration"], edges, labels=False))[
         "engagement"].quantile(1 - TOP_SHARE)
     add_liked_label(train, edges, bars)
     add_liked_label(test, edges, bars)

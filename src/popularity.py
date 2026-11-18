@@ -96,6 +96,24 @@ def main():
         mark = "*" if name == best else " "
         print(f" {mark}{name:13s} " + "   ".join(f"@{k}: {v:.3f}" for k, v in zip(KS, s)))
 
+    # Reference points on the final group, to put the scores in context.
+    final_liked = subset(liked_by_user, final)
+
+    def score_final(ranking):
+        return mean_recall_at_k({u: ranking for u in final}, final_liked, 10)
+
+    by_length = table["seconds"].sort_values(kind="stable").index.tolist()
+    # CEILING (cheats on purpose): the best possible same-list-for-everyone,
+    # ranked by how many final-group users liked each video. Not a method;
+    # only shows how much any popularity list could possibly achieve.
+    final_counts = (test[test["user_id"].isin(final)]
+                    .groupby("video_id")["liked"].sum())
+    ceiling = final_counts.sort_values(ascending=False).index.tolist()
+    print("\nREFERENCE POINTS (final group, recall@10)")
+    print(f"  10 shortest videos for everyone: {score_final(by_length):.3f}")
+    print(f"  10 longest videos for everyone:  {score_final(by_length[::-1]):.3f}")
+    print(f"  ceiling for ANY same-list-for-everyone (cheats): {score_final(ceiling):.3f}")
+
     print("\nOVERLAP: how many videos two top-10 lists share (out of 10)")
     names = list(lists)
     for i in range(len(names)):
