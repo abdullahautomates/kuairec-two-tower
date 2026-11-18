@@ -23,5 +23,15 @@ skipped video again" would be a separate re-ranking idea for future work.
 test table, videos under 7 seconds are watched to the end 70.4% of the time;
 videos over 60 seconds, 0.3% of the time.
 
+**That gap is mostly mechanical, not preference.** KuaiRec's per-video daily
+statistics include platform-wide counts of deliberate actions (likes, saves,
+shares, follows, "see less"). Across the 10,728 videos, none of the positive
+actions favours short videos: the Spearman correlation between video length
+and the share of players who acted is +0.14 for likes, +0.30 for saves, +0.34
+for shares and +0.31 for follows, against −0.47 for completion. Short videos
+are finished more because they are short, not because they are liked more.
+(The platform's own `complete_play` counts are not used: their definition is
+undocumented and inconsistent with the platform's average play progress.)
+
 _Work in progress. Results, setup instructions, and sources will be added as
 the project is built._
