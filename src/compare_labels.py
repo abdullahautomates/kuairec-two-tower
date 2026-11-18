@@ -89,7 +89,7 @@ def main():
     bars = train.groupby(train_group)["total"].quantile(1 - TOP_SHARE)
     test_group = pd.cut(test["video_duration"], edges, labels=False)
     # In the test table each pair has one watch, so total = watch_ratio.
-    liked_b = test["watch_ratio"] >= test_group.map(bars)
+    liked_b = test["engagement"] >= test_group.map(bars)
 
     print("Option B bars (top-third engagement per length group, from training):")
     lo = edges[:-1] / 1000
@@ -97,9 +97,9 @@ def main():
     for g, bar in bars.items():
         print(f"  {lo[g]:6.1f}s to {hi[g]:6.1f}s : liked if total watch_ratio >= {bar:.2f}")
 
-    score_label(test, test["watch_ratio"] >= 1.0, "A: watch_ratio >= 1.0")
+    score_label(test, test["engagement"] >= 1.0, "A: watch_ratio >= 1.0")
     score_label(test, liked_b, "B: top third within length group")
-    score_label(test, test["watch_ratio"] >= 2.0, "C: watch_ratio >= 2.0")
+    score_label(test, test["engagement"] >= 2.0, "C: watch_ratio >= 2.0")
 
     liked_b_train = train["total"] >= train_group.map(bars)
     print(f"\n(option B on the training table: {liked_b_train.mean():.1%} liked)")

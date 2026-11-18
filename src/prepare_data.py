@@ -1,30 +1,39 @@
-"""Step 3: turn raw watch logs into training and test "flashcards".
+"""Step 3: turn raw watch logs into a training set and a test set.
 
-Training set (from big_matrix):  one row per (user, video) pair, labelled
-    liked = 1 if ANY watch of that pair reached the end (watch_ratio >= 1.0).
-Test set (from small_matrix):     one row per (user, video) pair with the same
-    label. These are the "answer key" the recommendations get checked against.
+Each row is one (user, video) pair with a label: liked = 1 or 0.
 
-Also runs three checks before saving:
-  1. "Grows on you": skipped on the first watch, finished on a later one.
-  2. Short-video effect: does the liked rate depend on video length?
-  3. Likes per test user: can every test user be scored?
+The "liked" rule (option B, length-aware), agreed in step 3:
+  1. Split videos into 100 equal-size groups by length.
+  2. Engagement of a pair = SUM of watch_ratio over all of that user's watches
+     of that video (so rewatching counts).
+  3. In each length group, the "bar" is the engagement only the top third of
+     training pairs reach.
+  4. liked = engagement >= the bar for that video's length group.
+Bars are computed from TRAINING data only, then applied to both tables.
 
-Run:  uv run python -I src/prepare_data.py
+Why not "watched to the end"? It mostly measured video length: under 7s, 70%
+of watches finished; over 60s, 0.3%. See src/compare_labels.py and
+src/length_bias.py for the evidence.
+
+Training set: big_matrix (after removing exact duplicate log rows).
+Test set:     small_matrix (one watch per pair; nearly every user saw every video).
+
+Run:  uv run python src/prepare_data.py
 """
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw" / "KuaiRec" / "data"
 OUT = ROOT / "data" / "processed"
 
-# "Liked" = watched to the end. One number, in one place, so it's easy to change.
-LIKED_THRESHOLD = 1.0
+N_LENGTH_GROUPS = 100  # how finely to split videos by length
+TOP_SHARE = 1 / 3      # share of pairs in each length group that count as "liked"
+FINISHED = 1.0         # watch_ratio meaning "watched to the end" (used in check 1)
 
-# We only need these columns; skipping the rest saves memory and time.
 COLS = ["user_id", "video_id", "video_duration", "timestamp", "watch_ratio"]
 DTYPES = {"user_id": "int32", "video_id": "int32", "video_duration": "int64",
           "timestamp": "float64", "watch_ratio": "float64"}
@@ -45,97 +54,101 @@ def check_grows_on_you(big):
 
     first = b[b["watch_no"] == 0].set_index(PAIR)["watch_ratio"]
     later_best = b[b["watch_no"] > 0].groupby(PAIR)["watch_ratio"].max()
-    # Only pairs that were watched more than once have a "later" watch.
     rep = pd.DataFrame({"first": first.loc[later_best.index], "later_best": later_best})
 
     n_pairs = len(first)
-    first_skipped = rep[rep["first"] < LIKED_THRESHOLD]
-    grew = first_skipped[first_skipped["later_best"] >= LIKED_THRESHOLD]
+    first_skipped = rep[rep["first"] < FINISHED]
+    grew = first_skipped[first_skipped["later_best"] >= FINISHED]
 
     print(f"(user, video) pairs in total:         {n_pairs:,}")
     print(f"pairs watched more than once:         {len(rep):,} "
           f"({len(rep) / n_pairs:.1%} of pairs)")
-    print(f"  ...first watch already finished:    {len(rep) - len(first_skipped):,}")
     print(f"  ...first watch skipped:             {len(first_skipped):,}")
     print(f"      ...then finished on a later one: {len(grew):,} "
           f"({len(grew) / len(first_skipped):.1%} of those)")
-    print(f"'grew on them' pairs as share of ALL pairs: {len(grew) / n_pairs:.2%}")
 
 
-def check_short_video_effect(df, name):
-    """Liked rate by video length. A strong slope = 'liked' partly means 'short'."""
-    seconds = df["video_duration"] / 1000
-    buckets = pd.cut(seconds, [0, 7, 15, 30, 60, float("inf")],
-                     labels=["<7s", "7-15s", "15-30s", "30-60s", ">60s"])
-    table = df.groupby(buckets, observed=True)["liked"].agg(["size", "mean"])
-    table.columns = ["pairs", "liked_rate"]
-    table["share_of_pairs"] = table["pairs"] / table["pairs"].sum()
-    print(f"\n{name}:")
-    print(table.to_string(formatters={"pairs": "{:,}".format,
-                                      "liked_rate": "{:.1%}".format,
-                                      "share_of_pairs": "{:.1%}".format}))
+def length_group_edges(train):
+    """Boundaries that split the training VIDEOS into equal-size length groups."""
+    durations = train.groupby("video_id")["video_duration"].first()
+    edges = np.unique(np.quantile(durations, np.linspace(0, 1, N_LENGTH_GROUPS + 1)))
+    edges[0], edges[-1] = -np.inf, np.inf  # catch any video outside the training range
+    return edges
 
 
 def build_train(big):
-    """Collapse repeat watches: one row per pair, liked if ANY watch finished."""
-    train = big.groupby(PAIR).agg(
+    """One row per pair. engagement = total watch_ratio across all watches."""
+    return big.groupby(PAIR).agg(
+        engagement=("watch_ratio", "sum"),
         n_watches=("watch_ratio", "size"),
-        max_watch_ratio=("watch_ratio", "max"),
         video_duration=("video_duration", "first"),
     ).reset_index()
-    train["liked"] = (train["max_watch_ratio"] >= LIKED_THRESHOLD).astype("int8")
-    return train
 
 
 def build_test(small):
-    """The small table already has one row per pair; just add the label."""
-    test = small[PAIR + ["watch_ratio", "video_duration"]].copy()
-    test["liked"] = (test["watch_ratio"] >= LIKED_THRESHOLD).astype("int8")
+    """The small table already has one watch per pair, so engagement = watch_ratio."""
+    test = small[PAIR + ["video_duration"]].copy()
+    test["engagement"] = small["watch_ratio"]
     return test
+
+
+def add_liked_label(df, edges, bars):
+    """liked = 1 if engagement reaches the bar for this video's length group."""
+    group = pd.cut(df["video_duration"], edges, labels=False)
+    df["liked"] = (df["engagement"] >= group.map(bars)).astype("int8")
+
+
+def check_short_video_effect(df, name):
+    """Liked rate by video length. Should now be roughly flat."""
+    seconds = df["video_duration"] / 1000
+    buckets = pd.cut(seconds, [0, 7, 15, 30, 60, np.inf],
+                     labels=["<7s", "7-15s", "15-30s", "30-60s", ">60s"])
+    rates = df.groupby(buckets, observed=True)["liked"].mean()
+    print(f"{name}: " + "  ".join(f"{k} {v:.1%}" for k, v in rates.items()))
 
 
 def main():
     big = pd.read_csv(RAW / "big_matrix.csv", usecols=COLS, dtype=DTYPES)
     small = pd.read_csv(RAW / "small_matrix.csv", usecols=COLS, dtype=DTYPES)
 
-    # big_matrix contains ~966k rows that are exact copies of another row
-    # (same user, video, timestamp, watch_ratio): a logging glitch, not real
-    # rewatches. Left in, they would look like people watching twice.
+    # big_matrix contains ~968k rows that are exact copies of another row:
+    # a logging glitch, not real rewatches.
     before = len(big)
     big = big.drop_duplicates()
-    print(f"removed {before - len(big):,} exact duplicate rows from big_matrix "
-          f"({len(big):,} remain)")
+    print(f"removed {before - len(big):,} exact duplicate rows from big_matrix")
 
     check_grows_on_you(big)
 
     train = build_train(big)
     test = build_test(small)
 
-    section("CHECK 2: DO SHORT VIDEOS GET 'LIKED' MORE EASILY?")
-    check_short_video_effect(test, "TEST table (everyone saw everything: the fair view)")
-    check_short_video_effect(train, "TRAIN table")
+    # The bars come from TRAINING data only.
+    edges = length_group_edges(train)
+    bars = train.groupby(pd.cut(train["video_duration"], edges, labels=False))[
+        "engagement"].quantile(1 - TOP_SHARE)
+    add_liked_label(train, edges, bars)
+    add_liked_label(test, edges, bars)
+
+    section("CHECK 2: LIKED RATE BY VIDEO LENGTH (should be roughly flat)")
+    check_short_video_effect(test, "test ")
+    check_short_video_effect(train, "train")
 
     section("CHECK 3: CAN EVERY TEST USER BE SCORED?")
     likes = test.groupby("user_id")["liked"].sum()
-    print(f"test users: {len(likes):,}")
     print(f"liked videos per test user (out of ~3,327): median {likes.median():.0f}, "
           f"min {likes.min()}, max {likes.max():,}")
-    print(f"test users with 0 liked videos (can't be scored): {(likes == 0).sum()}")
-    print(f"test users with fewer than 10 liked videos:      {(likes < 10).sum()}")
-    history = train[train["user_id"].isin(likes.index)].groupby("user_id").size()
-    print(f"training pairs per test user (their 'history'):  median {history.median():.0f}, "
-          f"min {history.min()}")
+    print(f"test users with 0 liked videos: {(likes == 0).sum()}, "
+          f"with fewer than 10: {(likes < 10).sum()}")
 
-    section("THE FLASHCARDS")
-    for name, df in [("TRAIN (homework)", train), ("TEST (exam)", test)]:
-        print(f"{name}: {len(df):,} cards, {df['user_id'].nunique():,} users, "
-              f"{df['video_id'].nunique():,} videos, "
-              f"{df['liked'].mean():.1%} say 'liked'")
+    section("RESULT")
+    for name, df in [("train", train), ("test ", test)]:
+        print(f"{name}: {len(df):,} pairs, {df['user_id'].nunique():,} users, "
+              f"{df['video_id'].nunique():,} videos, {df['liked'].mean():.1%} liked")
 
     OUT.mkdir(parents=True, exist_ok=True)
     train.to_parquet(OUT / "train.parquet", index=False)
     test.to_parquet(OUT / "test.parquet", index=False)
-    print(f"\nsaved to {OUT}/train.parquet and test.parquet")
+    print(f"\nsaved to {OUT}/")
 
 
 if __name__ == "__main__":

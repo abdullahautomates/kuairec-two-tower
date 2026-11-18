@@ -33,5 +33,19 @@ are finished more because they are short, not because they are liked more.
 (The platform's own `complete_play` counts are not used: their definition is
 undocumented and inconsistent with the platform's average play progress.)
 
+This is a known problem, usually called *duration bias*. Kuaishou researchers
+describe it for watch-time prediction in [Zhan et al., 2022,
+"Deconfounding Duration Bias in Watch-time Prediction for Video
+Recommendation"](https://arxiv.org/abs/2206.06003). There, raw watch time
+favours *long* videos; here, the watch *ratio* favours *short* ones. Both are
+the same underlying issue: length changes the signal regardless of interest.
+
+**The fix used here:** a video counts as "liked" by a user if their total
+engagement (sum of watch ratios over all their views) is in the top third
+among videos of similar length (100 length groups, thresholds set on training
+data only). With "watched to the end" as the label, recommending the 10
+shortest videos to everyone scored recall@10 = 0.90 against 0.32 for random
+picks. With the length-aware label, the same shortcut scores 0.29 against 0.23.
+
 _Work in progress. Results, setup instructions, and sources will be added as
 the project is built._

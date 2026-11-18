@@ -93,7 +93,7 @@ def main():
     # Which label tracks deliberate actions better, per video?
     # Share of test users each video counts as "liked" under each label.
     test = pd.read_parquet(PROCESSED / "test.parquet")
-    test["label_A"] = test["watch_ratio"] >= 1.0
+    test["label_A"] = test["engagement"] >= 1.0
     test["label_B"] = label_b_for_test(test)
     per_video = test.groupby("video_id")[["label_A", "label_B"]].mean()
     joined = per_video.join(v, how="inner")
@@ -123,7 +123,7 @@ def label_b_for_test(test, n_groups=100, top_share=1 / 3):
     bars = train.groupby(pd.cut(train["video_duration"], edges, labels=False))[
         "total"].quantile(1 - top_share)
     group = pd.cut(test["video_duration"], edges, labels=False)
-    return test["watch_ratio"] >= group.map(bars)
+    return test["engagement"] >= group.map(bars)
 
 
 if __name__ == "__main__":
