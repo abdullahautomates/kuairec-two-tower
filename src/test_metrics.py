@@ -119,3 +119,38 @@ check("NDCG duplicate recommendation", ndcg_at_k_for_user(["A", "A", "X"], {"A",
 assert ndcg_at_k_for_user(["A"], set(), 3) is None
 
 print("\nall NDCG checks passed")
+
+# --- grade_scores: the one function every method is graded by ---
+# Two users, four candidate videos with IDs 10, 20, 30, 40.
+#   user 1: scores 0.9, 0.1, 0.5, 0.5; liked 10 and 40.
+#     Ranking: 10 (0.9), then 30 and 40 are tied at 0.5 and keep the
+#     candidates' order (30 before 40), then 20.  -> [10, 30, 40, 20]
+#     recall@2: top 2 = [10, 30], one hit, divide by min(2, 2) = 2   -> 0.5
+#     NDCG@10:  hits at positions 1 and 3 = 1.0 + 0.5 = 1.5;
+#               best possible = positions 1 and 2 = 1.631          -> 0.920
+#     AUC: 10 beats 20 and 30 (2 wins); 40 beats 20 (1 win) and ties
+#          with 30 (half a win) -> 3.5 of 4                         -> 0.875
+#   user 2: every score is 0.2 (all tied); liked 20 only.
+#     Ranking keeps the candidates' order                -> [10, 20, 30, 40]
+#     recall@2: top 2 = [10, 20], one hit, divide by min(1, 2) = 1   -> 1.0
+#     NDCG@10:  one hit at position 2 = 0.631; best possible = 1.0   -> 0.631
+#     AUC: three ties -> 1.5 of 3                                    -> 0.5
+from metrics import grade_scores, load_liked_by_user
+
+grid = np.array([[0.9, 0.1, 0.5, 0.5], [0.2, 0.2, 0.2, 0.2]])
+graded, top = grade_scores(grid, [1, 2], [10, 20, 30, 40],
+                           {1: {10, 40}, 2: {20}}, ks=(2, 10))
+assert top[1] == [10, 30, 40, 20] and top[2] == [10, 20, 30, 40], top
+check("grade_scores recall@2", graded[2], (0.5 + 1.0) / 2)
+check("grade_scores NDCG@10", graded["ndcg@10"], (1.5 / (P1 + P2) + P2) / 2)
+check("grade_scores AUC", graded["auc"], (0.875 + 0.5) / 2)
+
+# load_liked_by_user reads the answer column it is told to.
+import pandas as pd
+
+tiny = pd.DataFrame({"user_id": [1, 1, 2], "video_id": [10, 20, 10],
+                     "liked": [1, 0, 0], "finished": [0, 1, 1]})
+assert load_liked_by_user(tiny) == {1: {10}, 2: set()}
+assert load_liked_by_user(tiny, "finished") == {1: {20}, 2: {10}}
+
+print("\nall grading checks passed")

@@ -39,6 +39,13 @@ Options for experiments (scored on the choosing group only):
                    starts from random weights and shuffles the data randomly;
                    the seed fixes both, so a different seed is a fair "rerun"
                    that shows how much a score moves by luck alone.
+  --label NAME     which answer column to learn from and be graded on.
+                   "liked" (default) is the label we use. "finished" is the
+                   rejected "watched to the end" label: it trains the model we
+                   would have built had we kept it.
+
+The numbers for the README come from src/final_report.py, which scores the
+saved models on the final group.
 """
 
 import argparse
@@ -48,15 +55,13 @@ import math
 import time
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
 
 from data import (load_hard_negatives, load_training_pairs, load_user_features,
-                  load_video_tags)
-from metrics import (candidate_videos, liked_matrix, load_liked_by_user,
-                     mean_ndcg_at_k, mean_recall_at_k, mean_user_auc,
+                  load_video_tags, read_train_table)
+from metrics import (candidate_videos, grade_scores, load_liked_by_user,
                      split_test_users)
 from model import TwoTower
 
@@ -80,6 +85,7 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--name", default=None, help="name for saved files")
     p.add_argument("--seed", type=int, default=SEED)
+    p.add_argument("--label", choices=["liked", "finished"], default="liked")
     p.add_argument("--report-final", action="store_true",
                    help="score the FINAL group (only for results we will report)")
     return p.parse_args()
@@ -103,14 +109,7 @@ def evaluate(model, users, candidates, liked_by_user, device):
                                 torch.tensor(candidates, device=device))
     model.train()
     scores = scores.cpu().numpy()                          # [n_users, n_candidates]
-    top = np.argsort(-scores, axis=1)[:, :max(KS)]         # best first
-    cand = np.array(candidates)
-    recs = {u: cand[row].tolist() for u, row in zip(users, top)}
-    liked = {u: liked_by_user[u] for u in users}
-    result = {k: mean_recall_at_k(recs, liked, k) for k in KS}
-    result["auc"] = mean_user_auc(scores, liked_matrix(liked_by_user, users, candidates))
-    result["ndcg@10"] = mean_ndcg_at_k(recs, liked, 10)
-    return result, recs
+    return grade_scores(scores, users, candidates, liked_by_user, KS)
 
 
 def sample_skipped(users, n, neg_videos, neg_start, neg_count):
@@ -168,17 +167,19 @@ def main():
     torch.manual_seed(args.seed)
     device = pick_device()
     print(f"run: {name}   variant: {args.variant}   features: {use_features}   "
-          f"batch size: {args.batch_size}   seed: {args.seed}   device: {device}")
+          f"batch size: {args.batch_size}   seed: {args.seed}   "
+          f"label: {args.label}   device: {device}")
 
     # --- data ---
-    pair_users, pair_videos = load_training_pairs()
+    train_pairs = read_train_table(args.label)
+    pair_users, pair_videos = load_training_pairs(train_pairs)
     user_codes, feature_sizes = load_user_features()
     video_tags, n_tag_codes = load_video_tags()
     test = pd.read_parquet(ROOT / "data" / "processed" / "test.parquet")
     train_table = pd.read_parquet(ROOT / "data" / "processed" / "train.parquet",
                                   columns=["video_id"])
     liked_by_user = {u: {int(v) for v in s}
-                     for u, s in load_liked_by_user(test).items()}
+                     for u, s in load_liked_by_user(test, args.label).items()}
     candidates = [int(v) for v in candidate_videos(test)]
     choosing, final = split_test_users(test)
     n_pairs = len(pair_users)
@@ -202,7 +203,7 @@ def main():
     pair_users, pair_videos = pair_users.to(device), pair_videos.to(device)
     if args.variant != "inbatch":
         neg_videos, neg_start, neg_count = (
-            t.to(device) for t in load_hard_negatives(len(user_codes)))
+            t.to(device) for t in load_hard_negatives(len(user_codes), train_pairs))
         assert int((neg_count == 0).sum()) == 0, "a user has no skipped videos"
 
     scores, _ = evaluate(model, choosing, candidates, liked_by_user, device)
@@ -294,7 +295,7 @@ def main():
         "name": name,
         "config": {"variant": args.variant, "use_features": use_features,
                    "batch_size": args.batch_size, "epochs": args.epochs,
-                   "seed": args.seed},
+                   "seed": args.seed, "label": args.label},
         group_name: {**{f"recall@{k}": group_scores[k] for k in KS},
                      "auc": group_scores["auc"], "ndcg@10": group_scores["ndcg@10"]},
         "best_epoch": best["epoch"], "history": history,

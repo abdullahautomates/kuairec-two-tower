@@ -32,10 +32,17 @@ USER_COLUMNS = (
 MAX_TAGS = 4  # no video has more than 4 tags
 
 
-def read_train_table():
-    """The training table: one row per (user, video) pair, with liked = 1 or 0."""
-    return pd.read_parquet(PROCESSED / "train.parquet",
-                           columns=["user_id", "video_id", "liked"])
+def read_train_table(label="liked"):
+    """The training table: one row per (user, video) pair, with liked = 1 or 0.
+
+    label: which column supplies the 1/0 answer. "liked" is the label we use.
+    "finished" is the rejected "watched to the end" label; passing it trains a
+    model on that label instead (the column is renamed to "liked" here, so the
+    rest of the code does not need to know).
+    """
+    table = pd.read_parquet(PROCESSED / "train.parquet",
+                            columns=["user_id", "video_id", label])
+    return table.rename(columns={label: "liked"})
 
 
 def load_training_pairs(train=None):

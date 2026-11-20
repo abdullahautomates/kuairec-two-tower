@@ -89,9 +89,14 @@ def mean_ndcg_at_k(recommendations, liked_by_user, k):
     return sum(scores) / len(scores)
 
 
-def load_liked_by_user(test):
-    """Turn the test table into {user_id: set of liked video IDs}."""
-    liked = test[test["liked"] == 1]
+def load_liked_by_user(test, label="liked"):
+    """Turn the test table into {user_id: set of liked video IDs}.
+
+    label: which answer column to grade against. "liked" is the main marking.
+    "liked_even" (second table) and "finished" (the rejected first label) are
+    explained in prepare_data.py.
+    """
+    liked = test[test[label] == 1]
     sets = liked.groupby("user_id")["video_id"].apply(set).to_dict()
     # Users who liked nothing still appear, with an empty set.
     return {user: sets.get(user, set()) for user in test["user_id"].unique()}
@@ -158,6 +163,25 @@ def user_auc(scores, liked, counted=None):
 def mean_user_auc(scores, liked, counted=None):
     """Average per-user AUC, skipping users with no pairs to compare."""
     return float(np.nanmean(user_auc(scores, liked, counted)))
+
+
+def grade_scores(scores, users, candidates, liked_by_user, ks=(10, 50, 100)):
+    """Grade a grid of scores: one row per user, one column per candidate
+    video, higher = recommend sooner. Any method that can fill in such a grid
+    (the model, popularity, similar users) is graded by this one function.
+
+    Returns ({10: recall@10, 50: ..., 100: ..., "auc": per-user AUC,
+              "ndcg@10": NDCG@10}, {user: top video IDs, best first}).
+    Equal scores keep the candidates' order, so a result is the same every run.
+    """
+    top = np.argsort(-scores, axis=1, kind="stable")[:, :max(ks)]   # best first
+    cand = np.array(candidates)
+    recs = {u: cand[row].tolist() for u, row in zip(users, top)}
+    liked = {u: liked_by_user[u] for u in users}
+    result = {k: mean_recall_at_k(recs, liked, k) for k in ks}
+    result["auc"] = mean_user_auc(scores, liked_matrix(liked_by_user, users, candidates))
+    result["ndcg@10"] = mean_ndcg_at_k(recs, liked, 10)
+    return result, recs
 
 
 if __name__ == "__main__":

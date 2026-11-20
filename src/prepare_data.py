@@ -20,6 +20,13 @@ src/length_bias.py for the evidence.
 Training set: big_matrix (after removing exact duplicate log rows).
 Test set:     small_matrix (one watch per pair; nearly every user saw every video).
 
+Two extra columns sit next to "liked". Neither changes it:
+  finished    1 if the user watched the video to the end at least once. This
+              is the first label we tried and rejected. Kept so that one model
+              can be trained on it, to show what that label would have taught.
+  liked_even  (test table only) a second way to mark the test answers, used
+              for a second results table. See add_even_marking below.
+
 Run:  uv run python src/prepare_data.py
 """
 
@@ -28,6 +35,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from metrics import split_test_users
+
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw" / "KuaiRec" / "data"
 OUT = ROOT / "data" / "processed"
@@ -35,8 +44,9 @@ OUT = ROOT / "data" / "processed"
 N_LENGTH_GROUPS = 100  # how finely to split videos by length
 MAX_GROUP_RATIO = 1.25 # longest video in a group at most 25% longer than shortest
 MIN_GROUP_VIDEOS = 25  # ...but never cut a group into pieces smaller than this
+MIN_TEST_GROUP_VIDEOS = 10  # same idea for the second marking's test-side groups
 TOP_SHARE = 1 / 3      # share of pairs in each length group that count as "liked"
-FINISHED = 1.0         # watch_ratio meaning "watched to the end" (used in check 1)
+FINISHED = 1.0         # watch_ratio meaning "watched to the end"
 
 COLS = ["user_id", "video_id", "video_duration", "timestamp", "watch_ratio"]
 DTYPES = {"user_id": "int32", "video_id": "int32", "video_duration": "int64",
@@ -72,8 +82,8 @@ def check_grows_on_you(big):
           f"({len(grew) / len(first_skipped):.1%} of those)")
 
 
-def length_group_edges(train):
-    """Boundaries that split the training videos into groups of similar length.
+def length_group_edges(train, min_videos=MIN_GROUP_VIDEOS):
+    """Boundaries that split a table's videos into groups of similar length.
 
     Start with N_LENGTH_GROUPS groups holding equal numbers of videos. Long
     videos are rare, so the last equal-size group stretched from 77s to 5 min,
@@ -81,9 +91,9 @@ def length_group_edges(train):
     5 min is hard). So any group whose longest video is more than
     MAX_GROUP_RATIO times its shortest is cut into smaller pieces.
 
-    But each piece keeps at least MIN_GROUP_VIDEOS videos: in a group with
-    one video, "top third" would force that video to ~33% liked no matter how
-    good it is, which erases the very signal we want to measure.
+    But each piece keeps at least min_videos videos: in a group with one
+    video, "top third" would force that video to ~33% liked no matter how good
+    it is, which erases the very signal we want to measure.
     """
     durations = train.groupby("video_id")["video_duration"].first()
     edges = np.unique(np.quantile(durations, np.linspace(0, 1, N_LENGTH_GROUPS + 1)))
@@ -91,7 +101,7 @@ def length_group_edges(train):
     for lo, hi in zip(edges[:-1], edges[1:]):
         wanted = int(np.ceil(np.log(hi / lo) / np.log(MAX_GROUP_RATIO)))
         in_group = durations[(durations > lo) & (durations <= hi)]
-        pieces = min(wanted, len(in_group) // MIN_GROUP_VIDEOS)
+        pieces = min(wanted, len(in_group) // min_videos)
         if pieces > 1:
             # Cut at quantiles so every piece holds about the same number of videos.
             cuts = np.quantile(in_group, np.linspace(0, 1, pieces + 1))[1:-1]
@@ -122,6 +132,7 @@ def build_train(big):
         engagement=("watch_ratio", "sum"),
         n_watches=("watch_ratio", "size"),
         video_duration=("video_duration", "first"),
+        best_watch=("watch_ratio", "max"),   # only used for "finished" below
     ).reset_index()
 
 
@@ -138,13 +149,60 @@ def add_liked_label(df, edges, bars):
     df["liked"] = (df["engagement"] >= group.map(bars)).astype("int8")
 
 
-def check_short_video_effect(df, name):
-    """Liked rate by video length. Should now be roughly flat."""
+def add_finished_label(train, test):
+    """The old label: 1 if the user watched the video to the end at least once.
+
+    In training a pair can have several watches, so we look at the best one.
+    In the test table every pair has exactly one watch (engagement = its
+    watch_ratio).
+    """
+    train["finished"] = (train["best_watch"] >= FINISHED).astype("int8")
+    test["finished"] = (test["engagement"] >= FINISHED).astype("int8")
+    train.drop(columns="best_watch", inplace=True)
+
+
+def add_even_marking(test):
+    """A second way to mark the TEST answers: column "liked_even".
+
+    Why it exists. The bars for "liked" come from the training watches. Those
+    are videos the app chose to show, with rewatches added up. The test table
+    is different: nearly every user saw every video exactly once. Applying
+    training bars to it leaves a small slope: very short test videos count as
+    liked a bit more often (about 30% under 5 seconds, 23% overall). A method
+    could pick up a little score just by favouring very short videos.
+
+    What this does. It sets the bars on the test side instead: group the test
+    videos by length, and in each group mark the same share of watches as
+    liked. That share is the overall share under the main marking, so the two
+    markings are equally strict and their scores can be compared.
+
+    What keeps it honest:
+      - the bars use the CHOOSING group's watches only. The final group's
+        answers have no say in how the final group is marked;
+      - it is never used for training, and never used to pick a model;
+      - "liked" stays the main result. This is a second table that answers
+        one question: do the conclusions survive when very short videos get
+        no head start?
+
+    Returns (number of length groups, the share marked as liked).
+    """
+    choosing, _ = split_test_users(test)
+    mine = test["user_id"].isin(choosing)
+    share = test.loc[mine, "liked"].mean()
+    edges = length_group_edges(test, MIN_TEST_GROUP_VIDEOS)
+    group = pd.cut(test["video_duration"], edges, labels=False)
+    bars = test[mine].groupby(group[mine])["engagement"].quantile(1 - share)
+    test["liked_even"] = (test["engagement"] >= group.map(bars)).astype("int8")
+    return len(bars), share
+
+
+def check_short_video_effect(df, name, column="liked"):
+    """Liked rate by video length. Should be roughly flat."""
     seconds = df["video_duration"] / 1000
     buckets = pd.cut(seconds, [0, 7, 15, 30, 60, 90, 120, np.inf],
                      labels=["<7s", "7-15s", "15-30s", "30-60s", "60-90s",
                              "90-120s", ">120s"])
-    rates = df.groupby(buckets, observed=True)["liked"].mean()
+    rates = df.groupby(buckets, observed=True)[column].mean()
     print(f"{name}: " + "  ".join(f"{k} {v:.1%}" for k, v in rates.items()))
 
 
@@ -171,10 +229,35 @@ def main():
         "engagement"].quantile(1 - TOP_SHARE)
     add_liked_label(train, edges, bars)
     add_liked_label(test, edges, bars)
+    add_finished_label(train, test)
+    n_even_groups, even_share = add_even_marking(test)
 
     section("CHECK 2: LIKED RATE BY VIDEO LENGTH (should be roughly flat)")
     check_short_video_effect(test, "test ")
     check_short_video_effect(train, "train")
+
+    section("SECOND MARKING (liked_even): TEST ANSWERS EVENED OUT BY LENGTH")
+    print(f"{n_even_groups} test length groups, {even_share:.1%} of watches "
+          f"marked as liked in each")
+    choosing, final = split_test_users(test)
+    seconds = test["video_duration"] / 1000
+    fine = pd.cut(seconds, [0, 5, 7, 10, 15, 30, 60, 120, np.inf],
+                  labels=["<5s", "5-7s", "7-10s", "10-15s", "15-30s", "30-60s",
+                          "60-120s", ">120s"])
+    # The bars were set on the choosing group, so that group is flat by
+    # construction. The final group is the real check: it had no say.
+    for name, users in [("choosing", choosing), ("final", final)]:
+        rows = test["user_id"].isin(users)
+        for column in ["liked", "liked_even"]:
+            rates = test[rows].groupby(fine[rows], observed=True)[column].mean()
+            print(f"{name:8s} {column:10s} " +
+                  "  ".join(f"{k} {v:.1%}" for k, v in rates.items()))
+    changed = (test["liked"] != test["liked_even"]).mean()
+    print(f"test watches marked differently by the two markings: {changed:.1%}")
+
+    section("OLD LABEL (finished): WATCHED TO THE END AT LEAST ONCE")
+    check_short_video_effect(test, "test ", "finished")
+    check_short_video_effect(train, "train", "finished")
 
     section("CHECK 3: CAN EVERY TEST USER BE SCORED?")
     likes = test.groupby("user_id")["liked"].sum()
