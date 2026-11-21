@@ -93,7 +93,7 @@ OUT = ROOT / "outputs"
 LEARNING_RATE = 1e-3
 SEED = 0
 KS = [10, 50, 100]
-SHORT_SECONDS = 5  # the short-video check agreed in step 5
+SHORT_SECONDS = 5  # the short-video check introduced in step 5
 N_SKIPPED = 8      # skipped videos per example in the "liked vs skipped" question
 
 

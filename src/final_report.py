@@ -53,7 +53,7 @@ PROCESSED = ROOT / "data" / "processed"
 OUT = ROOT / "outputs"
 
 KS = (10, 50, 100)
-SHORT_SECONDS = 5  # the short-video check agreed in step 5
+SHORT_SECONDS = 5  # the short-video check introduced in step 5
 MAIN_RUNS = [f"main_seed{seed}" for seed in range(5)]
 # Seed 0 ran for 40 epochs to see the whole curve; its best epoch was 9.
 # Seeds 1-4 ran for 12 epochs, which covers that peak.

@@ -2,7 +2,7 @@
 
 Each row is one (user, video) pair with a label: liked = 1 or 0.
 
-The "liked" rule (option B, length-aware), agreed in step 3:
+The "liked" rule (option B, length-aware), chosen in step 3:
   1. Split videos into groups of similar length: 100 equal-size groups, with
      any group spanning more than 25% (longest vs shortest) cut further,
      keeping at least 25 videos per group.

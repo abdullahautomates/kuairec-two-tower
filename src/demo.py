@@ -18,9 +18,9 @@ Three choices that keep the demo honest:
     final group, so three examples are not mistaken for the whole picture.
 
 Models shown:
-  step 7: "mixed + logQ"      best top-10 score of the project
-  step 6: "liked vs skipped"  best ranking of the whole list, more varied picks
-  popularity (step 5):        the same 10 videos for everyone
+  "mixed + logQ" (step 7)      best top-10 score of the project
+  "liked vs skipped" (step 6)  best ranking of the whole list, more varied picks
+  popularity (step 5)          the same 10 videos for everyone
 
 Video categories come from kuairec_caption_category.csv. The names there are
 in Chinese; the English names below are our own translations. Captions are
@@ -164,8 +164,8 @@ def main():
     column_of = {v: j for j, v in enumerate(candidates)}
     popular = [column_of[v] for v in ranked_list(table, "like_rate")[:K]]
 
-    recipes = {"STEP 7 MODEL (mixed + logQ)": LOGQ_RUNS,
-               "STEP 6 MODEL (liked vs skipped)": MAIN_RUNS}
+    recipes = {"TWO-TOWER, MIXED + LOGQ": LOGQ_RUNS,
+               "TWO-TOWER, LIKED VS SKIPPED": MAIN_RUNS}
     lists, every_run = {}, {}
     for name, runs in recipes.items():
         every_run[name] = []
@@ -220,7 +220,7 @@ def main():
               f"the same for {(hits[name] == pop_hits).mean():.0%}, "
               f"fewer for {(hits[name] < pop_hits).mean():.0%}")
     a, b = hits[names[0]], hits[names[1]]
-    print(f"  Step 7 model against step 6 model: more hits for {(a > b).mean():.0%} "
+    print(f"  Mixed + logQ against liked vs skipped: more hits for {(a > b).mean():.0%} "
           f"of users, the same for {(a == b).mean():.0%}, fewer for {(a < b).mean():.0%}")
 
     # Do the recommendations follow each user's favourite categories?
@@ -248,7 +248,7 @@ def main():
     print(f"    {'any test video (what chance gives)':<34} {in_favourites.mean():>9.0%}")
     distinct = {name: len(np.unique(top[rows])) for name, top in lists.items()}
     print("\n  Different videos recommended across all these users: " +
-          ",  ".join(f"{name.split(' (')[0].lower()} {n:,}" for name, n in distinct.items()))
+          ",  ".join(f"{name.lower()} {n:,}" for name, n in distinct.items()))
 
 
 if __name__ == "__main__":
