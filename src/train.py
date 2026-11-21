@@ -23,6 +23,27 @@ Four variants. They differ in what counts as a "wrong answer" in training:
   skipped : only question (b). Every wrong answer is a video the user really
             watched and skipped, which is what the fully observed test measures.
 
+The logQ correction (--logq, step 7). It only applies to the variants that
+use in-batch wrong answers (inbatch, mixed):
+  A batch is filled with liked pairs, so a video with 4,000 likes turns up in
+  batches about 4,000 times as often as a video with 1 like. Every time it
+  turns up, it is a wrong answer for the other rows and its score is pushed
+  down. Over an epoch the model learns to under-rate popular videos for
+  everybody, simply because they were in the room more often.
+  The correction: q[v] = the chance that a batch slot holds video v (v's share
+  of all liked pairs). During training only, subtract log(q[v]) from every
+  score in v's column before computing the loss. log(q) is negative, and more
+  negative for rare videos (about -6.7 for the most liked video, -15 for a
+  video with one like), so this raises rare videos' training scores the most.
+  A frequent video then looks like a weaker wrong answer than a rare one with
+  the same plain score, and each appearance pushes it down less: many gentle
+  pushes for frequent videos, a few hard pushes for rare ones.
+  When recommending, the plain scores are used, with no correction.
+  Source: Yi et al., "Sampling-Bias-Corrected Neural Modeling for Large Corpus
+  Item Recommendations", RecSys 2019. Same formula as the TensorFlow
+  Recommenders library: applied to every column, the row's own right answer
+  included.
+
 Honesty rule: after each epoch we score on the CHOOSING group and keep the
 best epoch (by per-user AUC, which is steadier than recall@10). The FINAL
 group is only scored when --report-final is passed, which is for results
@@ -39,6 +60,7 @@ Options for experiments (scored on the choosing group only):
                    starts from random weights and shuffles the data randomly;
                    the seed fixes both, so a different seed is a fair "rerun"
                    that shows how much a score moves by luck alone.
+  --logq           apply the logQ correction (variants inbatch and mixed only)
   --label NAME     which answer column to learn from and be graded on.
                    "liked" (default) is the label we use. "finished" is the
                    rejected "watched to the end" label: it trains the model we
@@ -86,9 +108,14 @@ def parse_args():
     p.add_argument("--name", default=None, help="name for saved files")
     p.add_argument("--seed", type=int, default=SEED)
     p.add_argument("--label", choices=["liked", "finished"], default="liked")
+    p.add_argument("--logq", action="store_true",
+                   help="logQ correction for the in-batch wrong answers")
     p.add_argument("--report-final", action="store_true",
                    help="score the FINAL group (only for results we will report)")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.logq and args.variant not in ("inbatch", "mixed"):
+        p.error("--logq corrects in-batch wrong answers: use it with inbatch or mixed")
+    return args
 
 
 def pick_device():
@@ -135,14 +162,21 @@ def skipped_loss(user_vecs, pos_vecs, skip_vecs):
     return F.cross_entropy(logits, targets)
 
 
-def batch_loss(user_vecs, pos_vecs, user_ids, pos_ids, neg_vecs=None, neg_ids=None):
+def batch_loss(user_vecs, pos_vecs, user_ids, pos_ids, neg_vecs=None, neg_ids=None,
+               log_q=None):
     """Softmax cross-entropy where row i's right answer is column i.
 
     Columns 0..B-1 are the batch's liked videos (in-batch negatives).
     If hard negatives are given, columns B..2B-1 are one watched-but-not-liked
     video per row's user; each row must beat its own user's skipped video too.
+    log_q (optional): log of each video's chance of filling a batch slot. If
+    given, the logQ correction is applied (see the top of this file).
     """
     logits = user_vecs @ pos_vecs.T                        # [B, B] scores
+    if log_q is not None:
+        # Column j holds video pos_ids[j]: subtract that video's log(q) from
+        # the whole column. Training only; evaluate() uses the plain scores.
+        logits = logits - log_q[pos_ids][None, :]
     # Don't count a column as a "wrong answer" if it is really a right one:
     # the same video appearing twice in the batch, or another video liked by
     # the same user. Setting its score to -inf removes it from the softmax.
@@ -168,7 +202,7 @@ def main():
     device = pick_device()
     print(f"run: {name}   variant: {args.variant}   features: {use_features}   "
           f"batch size: {args.batch_size}   seed: {args.seed}   "
-          f"label: {args.label}   device: {device}")
+          f"label: {args.label}   logQ: {args.logq}   device: {device}")
 
     # --- data ---
     train_pairs = read_train_table(args.label)
@@ -201,6 +235,17 @@ def main():
     print(f"model weights (learnable numbers): {n_weights:,}")
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     pair_users, pair_videos = pair_users.to(device), pair_videos.to(device)
+    log_q = None
+    if args.logq:
+        # q[v] = how often video v fills a batch slot = its share of the liked
+        # pairs. Videos with no likes never appear in a batch, so the value
+        # they get does not matter (clamp only avoids log(0)).
+        likes = torch.bincount(pair_videos, minlength=len(video_tags)).float()
+        log_q = torch.log(likes.clamp(min=1) / n_pairs)
+        print(f"logQ: most liked video has {int(likes.max()):,} likes "
+              f"(log q {log_q.max().item():.1f}); a video with one like has "
+              f"log q {math.log(1 / n_pairs):.1f}")
+        print("(with logQ the loss is not comparable to the 'pure guessing' number)")
     if args.variant != "inbatch":
         neg_videos, neg_start, neg_count = (
             t.to(device) for t in load_hard_negatives(len(user_codes), train_pairs))
@@ -221,7 +266,7 @@ def main():
             u, v = pair_users[idx], pair_videos[idx]
             user_vecs, pos_vecs = model.user_tower(u), model.video_tower(v)
             if args.variant == "inbatch":
-                loss = batch_loss(user_vecs, pos_vecs, u, v)
+                loss = batch_loss(user_vecs, pos_vecs, u, v, log_q=log_q)
             elif args.variant == "hardneg":
                 n = sample_skipped(u, 1, neg_videos, neg_start, neg_count)[:, 0]
                 loss = batch_loss(user_vecs, pos_vecs, u, v, model.video_tower(n), n)
@@ -231,7 +276,7 @@ def main():
                     len(u), N_SKIPPED, -1)                          # [B, N_SKIPPED, 64]
                 loss = skipped_loss(user_vecs, pos_vecs, skip_vecs)
                 if args.variant == "mixed":
-                    loss = loss + batch_loss(user_vecs, pos_vecs, u, v)
+                    loss = loss + batch_loss(user_vecs, pos_vecs, u, v, log_q=log_q)
             optimizer.zero_grad()   # clear the previous batch's nudges
             loss.backward()         # work out which way to nudge every weight
             optimizer.step()        # nudge them
@@ -295,7 +340,7 @@ def main():
         "name": name,
         "config": {"variant": args.variant, "use_features": use_features,
                    "batch_size": args.batch_size, "epochs": args.epochs,
-                   "seed": args.seed, "label": args.label},
+                   "seed": args.seed, "label": args.label, "logq": args.logq},
         group_name: {**{f"recall@{k}": group_scores[k] for k in KS},
                      "auc": group_scores["auc"], "ndcg@10": group_scores["ndcg@10"]},
         "best_epoch": best["epoch"], "history": history,

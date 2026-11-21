@@ -1,4 +1,4 @@
-"""Step 6: the results tables.
+"""Steps 6 and 7: the results tables.
 
 Scores every method on one group of test users, under both markings of the
 test answers, and prints the tables that go in the README.
@@ -21,6 +21,9 @@ Methods:
   model rows        saved two-tower models from outputs/. The main model was
                     trained five times with different seeds; its row shows the
                     average, and after the +- how much the five runs differ.
+                    Step 7 adds four rows: the in-batch model and the mixed
+                    model, each without and with the logQ correction (all IDs
+                    only, so the correction is the only difference in a pair).
 
 Markings (defined in prepare_data.py):
   liked       the main marking. Its bars come from training data only.
@@ -56,6 +59,12 @@ MAIN_RUNS = [f"main_seed{seed}" for seed in range(5)]
 MODEL_ROWS = [
     ("model: in-batch (run 1)", ["inbatch"]),
     ("model: + 1 skipped (run 2)", ["hardneg"]),
+    ("in-batch, IDs only", ["s7_inbatch"]),
+    ("in-batch + logQ", ["s7_inbatch_logq"]),
+    ("mixed", ["s7_mixed"]),
+    # Seed 0 ran for 40 epochs to see the whole curve; its best epoch was 9.
+    # Seeds 1-4 ran for 12 epochs, which covers that peak.
+    ("mixed + logQ", ["s7_mixed_logq"] + [f"s7_mixed_logq_seed{s}" for s in range(1, 5)]),
     ("model: liked vs skipped", MAIN_RUNS),
     ("same model, old label", ["oldlabel"]),
 ]
@@ -201,12 +210,14 @@ def main():
         results[label] = {name: [{str(k): v for k, v in r.items()} for r in runs]
                           for name, runs in rows}
 
-    # --- each run of the main model on its own, to see the spread ---
-    print(f"\nTHE {len(MAIN_RUNS)} RUNS OF THE MAIN MODEL (main marking, {args.group} group)")
-    main_scores = results["liked"]["model: liked vs skipped"]
-    for run, r in zip(MAIN_RUNS, main_scores):
-        print(f"  {run}: best epoch {best_epochs[run]:2d}   recall@10 {r['10']:.3f}   "
-              f"NDCG@10 {r['ndcg@10']:.3f}   AUC {r['auc']:.3f}")
+    # --- rows trained several times: each run on its own, to see the spread ---
+    for row_name, runs in MODEL_ROWS:
+        if len(runs) == 1:
+            continue
+        print(f"\nTHE {len(runs)} RUNS OF \"{row_name}\" (main marking, {args.group} group)")
+        for run, r in zip(runs, results["liked"][row_name]):
+            print(f"  {run}: best epoch {best_epochs[run]:2d}   recall@10 {r['10']:.3f}   "
+                  f"NDCG@10 {r['ndcg@10']:.3f}   AUC {r['auc']:.3f}")
 
     # --- what each method recommends ---
     short = seconds < SHORT_SECONDS
