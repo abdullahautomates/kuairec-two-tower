@@ -24,8 +24,9 @@ KuaiRec's users and videos. And a like tap is not the same thing as
 enjoying a video; it is independent evidence, not the truth.
 
 Data: https://kuairand.com, Gao et al., "KuaiRand: An Unbiased Sequential
-Recommendation Dataset with Randomly Exposed Videos", CIKM 2022. License
-CC BY-SA 4.0. Not included in this repository.
+Recommendation Dataset with Randomly Exposed Videos", CIKM 2022. Licence
+CC BY-SA 4.0. Not included in this repository: extract KuaiRand-Pure.tar.gz
+into data/raw/KuaiRand/ (the README has the commands).
 
 Run (the -I keeps Python from importing anything out of the data folders):
     uv run python -I src/kuairand_check.py

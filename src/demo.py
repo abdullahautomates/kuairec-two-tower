@@ -3,7 +3,7 @@ models recommend, and mark every recommendation right or wrong.
 
     uv run python src/demo.py                    # 3 users picked at random (seed 0)
     uv run python src/demo.py --seed 7           # 3 other random users
-    uv run python src/demo.py --users 14 3210    # specific test users
+    uv run python src/demo.py --users 14 4660    # specific test users
 
 Why every recommendation can be marked: test users saw nearly every test
 video, so for each recommended video we know whether that person liked it.

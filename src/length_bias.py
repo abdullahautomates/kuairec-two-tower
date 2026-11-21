@@ -10,7 +10,12 @@ of the gap is mechanical bias.
 Source: item_daily_features.csv, platform-wide counts per video per day (all
 Kuaishou users, not only the 7,176 in our tables). We sum each video's days.
 
-Run:  uv run python -I src/length_bias.py
+The last table compares two labels: A = watched to the end, B = length-aware.
+Like compare_labels.py, it uses the first form of B (100 equal-size length
+groups), from before prepare_data.py refined the groups.
+
+Run after prepare_data.py (it reads the tables that script writes):
+    uv run python -I src/length_bias.py
 """
 
 from pathlib import Path
@@ -108,7 +113,7 @@ def main():
 
 
 def label_b_for_test(test, n_groups=100, top_share=1 / 3):
-    """Option B label for the test table (same method as src/compare_labels.py).
+    """Label B for the test table (same method as src/compare_labels.py).
 
     Bars = the top-third cutoff of total engagement per length group, learned
     from TRAINING data only, then applied to test watches.

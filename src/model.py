@@ -5,6 +5,9 @@ Video tower: video ID + category tags  -> 64 numbers (the video's embedding)
 Score:       dot product of the two embeddings (multiply pairwise, add up).
              High score = "this user will probably like this video".
 
+With use_features=False each tower sees only the ID ("IDs only"). That is what
+the models in the README's results use: the features and tags did not help.
+
 nn.Embedding(n, d) is a learnable table with n rows of d numbers: row i is
 the embedding for ID (or category code) i. Training adjusts these numbers.
 nn.Linear is "multiply by a grid of learnable weights and add a bias".

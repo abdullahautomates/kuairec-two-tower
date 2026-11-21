@@ -9,7 +9,9 @@ pair from group B. 0.5 = can't tell the groups apart; 1.0 = perfect.
      choosing test group). High AUC = the model learned what users enjoy among
      the videos they saw. This is what the test measures.
 
-Run:  uv run python src/diagnose_model.py hardneg     (or: inbatch)
+Run:  uv run python src/diagnose_model.py NAME
+NAME is any saved run in outputs/, for example inbatch, hardneg or
+main_seed0 (default: hardneg, the second version in the README).
 """
 
 import json
@@ -50,7 +52,8 @@ def main():
     model = TwoTower(len(user_codes), feature_sizes, user_codes,
                      len(video_tags), n_tag_codes, video_tags,
                      use_features=config.get("use_features", True))
-    model.load_state_dict(torch.load(ROOT / "outputs" / f"{name}.pt"))
+    model.load_state_dict(torch.load(ROOT / "outputs" / f"{name}.pt",
+                                     map_location=device))
     model.to(device).eval()
 
     @torch.no_grad()

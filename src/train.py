@@ -1,6 +1,7 @@
 """Step 6: train the two-tower model and score it.
 
-Training, in short:
+Training, in short (shown for in-batch negatives, the standard way to train a
+two-tower model; the variants below change what counts as a wrong answer):
   - Take a BATCH of liked (user, video) pairs.
   - Score every user in the batch against every video in the batch.
   - For each user, their own liked video is the right answer; the batch's
@@ -11,17 +12,20 @@ Training, in short:
   - One EPOCH = one pass over all 3.4M liked pairs.
 
 Four variants. They differ in what counts as a "wrong answer" in training:
-  inbatch : the other videos in the batch only (run 1). The model learns
-            what users get shown, not what they enjoy.
+  inbatch : the other videos in the batch only (with features: the first
+            version in the README). The model learns what users get shown,
+            not what they enjoy.
   hardneg : in-batch, plus ONE video the same user watched but did not like,
-            mixed into the same big list of wrong answers (run 2). Right
-            idea, but that one video is 1 of ~8,000, so it barely counts.
+            mixed into the same big list of wrong answers (the second
+            version). Right idea, but that one video is 1 of ~8,000, so it
+            barely counts.
   mixed   : two separate questions per example, added together:
-            (a) in-batch, as in run 1;
+            (a) in-batch, as in the first variant;
             (b) "liked vs skipped": the liked video against 8 videos the same
                 user watched but skipped, and nothing else.
   skipped : only question (b). Every wrong answer is a video the user really
             watched and skipped, which is what the fully observed test measures.
+            This is the default.
 
 The logQ correction (--logq, step 7). It only applies to the variants that
 use in-batch wrong answers (inbatch, mixed):
@@ -49,10 +53,14 @@ best epoch (by per-user AUC, which is steadier than recall@10). The FINAL
 group is only scored when --report-final is passed, which is for results
 that go in the README, not for experiments.
 
-Run:  uv run python src/train.py --variant hardneg --report-final
+Run (one of the five runs of the "liked vs skipped" model in the README):
+    uv run python src/train.py --variant skipped --no-features --epochs 30 --seed 0 --name main_seed0
+The README lists the command for every model in its tables.
 
-Options for experiments (scored on the choosing group only):
-  --no-features    IDs only: no user features, no video tags
+Options (everything is scored on the choosing group unless --report-final):
+  --variant NAME   inbatch, hardneg, mixed or skipped (default), see above
+  --no-features    IDs only: no user features, no video tags. Every model in
+                   the README's tables uses this, except the first two versions
   --batch-size N   pairs per batch (default 4096)
   --epochs N       passes over the data (default 10)
   --name NAME      file name for the saved model and results (default: variant)
@@ -100,7 +108,7 @@ N_SKIPPED = 8      # skipped videos per example in the "liked vs skipped" questi
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--variant", choices=["inbatch", "hardneg", "mixed", "skipped"],
-                   default="hardneg")
+                   default="skipped")
     p.add_argument("--no-features", action="store_true",
                    help="IDs only: drop user features and video tags")
     p.add_argument("--batch-size", type=int, default=4096)

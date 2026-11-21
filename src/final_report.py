@@ -18,8 +18,11 @@ Methods:
   similar users     a counting method, no neural network: find training users
                     whose likes agree with this user's, and recommend what
                     they liked (explained in taste_check.py)
-  model rows        saved two-tower models from outputs/. The main model was
-                    trained five times with different seeds; its row shows the
+  model rows        saved two-tower models from outputs/ (the README lists
+                    the command that trains each one). "(run 1)" and "(run 2)"
+                    are the first and second versions in the README. Two
+                    recipes were trained five times with different seeds,
+                    "liked vs skipped" and "mixed + logQ"; their rows show the
                     average, and after the +- how much the five runs differ.
                     Step 7 adds four rows: the in-batch model and the mixed
                     model, each without and with the logQ correction (all IDs

@@ -3,6 +3,8 @@
 MPS ("Metal Performance Shaders") is Apple's GPU backend for PyTorch.
 If it's available, we can train on the GPU; if not, the CPU still works,
 just slower. For a model this small, either is fine.
+
+Run:  uv run python src/check_torch.py
 """
 
 import sys

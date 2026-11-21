@@ -16,6 +16,15 @@ several ranking stages on top. It is not Instagram's algorithm, it uses no
 Instagram data, and it is not new research. The value of the project is in how
 the model was tested, and in what went wrong along the way.
 
+**Contents:** [Results](#results-at-a-glance) ·
+[Findings](#what-the-project-found) ·
+[How it works](#how-it-works) ·
+[Full results](#full-results) ·
+[Demo](#demo) ·
+[Label check](#checking-the-label-against-real-likes) ·
+[Limitations](#limitations) ·
+[Run it yourself](#run-it-yourself)
+
 ## Results at a glance
 
 Each method recommends 10 of 3,327 videos to each of 706 test users. These
@@ -39,17 +48,22 @@ the other half of the test users (see [How methods are tested](#how-methods-are-
 - **±**: the spread (standard deviation) over five training runs that differ
   only in their random starting point.
 
+The two two-tower rows are the same model trained in two different ways;
+[The models](#the-models) explains both.
+
 How to read it:
 
 - The best two-tower model gets about **3.2 of 10** recommendations right,
   against 2.5 for popularity and 2.3 for random picks.
 - It **does not beat a simple counting method** ("people whose likes agree
-  with yours liked this"). The two are level. Under a second, stricter way of
-  marking the test (explained below) the model is ahead, 0.306 against 0.290.
+  with yours liked this"). The two are level. Under a second way of marking
+  the test, one that gives very short videos no head start (explained under
+  [How methods are tested](#how-methods-are-tested)), the model is ahead,
+  0.306 against 0.290.
 - The scores are modest because the test is hard. "Liked" marks about 23% of
-  watches, and even a method that cheats by reading each user's real test
-  answers on half of the videos only reaches 0.396 (measured on the other
-half of the test users).
+  watches, and even a method that cheats, by reading each user's real test
+  answers on half of the videos to predict the other half, only reaches 0.396
+  (measured on the other half of the test users).
 
 ## What the project found
 
@@ -83,10 +97,13 @@ because the "wrong answers" are mostly videos the user never saw. The test
 asks something different. Test users saw nearly every video, so the question
 is *which of the videos you saw did you like?*
 
-Changing the training question to exactly that (each liked video against 8
-videos the same user watched and skipped) raised recall@10 to 0.295 and AUC
-from 0.507 to 0.558. Training longer, a larger model, and adding user
-features and video tags did not help.
+Two changes moved it past popularity. Dropping the user features and video
+tags, so that the model knows users and videos by their IDs only, and
+training for more passes took the in-batch model to 0.284 (AUC from 0.507 to
+0.542). Changing the training question to exactly what the test asks (each
+liked video against 8 videos the same user watched and skipped) took it to
+0.295 (AUC 0.558). With that question, training longer, a larger model, and
+putting the features and tags back did not help.
 
 ### 3. Always report the simple baseline
 
@@ -321,14 +338,15 @@ comments and shares for each watch. Script: [`src/kuairand_check.py`](src/kuaira
 | The same, on videos shown at random | 6.8 times | 7.4 times |
 | AUC for predicting a real like (random part) | 0.747 | 0.766 |
 | AUC for a follow / comment / share (random part) | 0.799 / 0.900 / 0.761 | 0.822 / 0.925 / 0.825 |
-| Share of watches marked, shortest videos compared with longest (random part) | 22 times higher | 1.6 times higher |
+| Share of watches marked, shortest videos compared with longest (random part) | 22 times higher | 1.4 times higher |
 
 What it shows:
 
 - **Watch time is a real signal.** Watches marked as liked carry several
   times more real likes than the rest.
-- **The length-aware rule agrees with real actions somewhat better**,
-  clearly on randomly shown videos and about equally on the app's own choices.
+- **The length-aware rule agrees with real actions somewhat better**:
+  clearly on randomly shown videos; on the app's own choices it is level for
+  likes and better for follows, comments and shares.
 - **It behaves almost exactly like Kuaishou's own "long view" signal**: that
   one marks 35.1% of watches, this project's rule 33.3%, with nearly the same
   real-like rates (3.69% and 3.79%).
@@ -375,8 +393,9 @@ The step numbers match the comments at the top of each script.
    After the fix: 0.248.
 6. **Two-tower model.** The first version tied with popularity. A diagnostic
    showed it had learned what users are shown, not what they like. A counting
-   method reached 0.31, so there was taste to learn. The training question
-   was changed to "liked vs skipped": 0.295.
+   method reached 0.31, so there was taste to learn. User features and video
+   tags were hurting the early versions and were dropped, and the training
+   question was changed to "liked vs skipped": 0.295.
 7. **logQ correction.** No gain for the plain in-batch model's ranking; a
    clear gain at the top of the list for the mixed model: 0.317.
 8. **Demo.**
@@ -398,23 +417,36 @@ The step numbers match the comments at the top of each script.
 
 ## Run it yourself
 
-Requires [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 and the
-dependencies). Developed on an Apple-silicon laptop; training everything takes
-about 3 to 4 hours there. Numbers vary slightly from run to run.
+You need [uv](https://docs.astral.sh/uv/); it installs Python 3.12 and the
+dependencies. The dataset is a 430 MB download (1.6 GB unpacked) from the
+Zenodo link given on [kuairec.com](https://kuairec.com).
 
 ```bash
 uv sync
 
-# Data: download KuaiRec.zip from https://kuairec.com and unzip it so that
-# data/raw/KuaiRec/data/big_matrix.csv exists. Then:
+# The data. The scripts read data/raw/KuaiRec/data/*.csv
+mkdir -p data/download data/raw
+curl -L -o data/download/KuaiRec.zip https://zenodo.org/records/18164998/files/KuaiRec.zip
+unzip -q data/download/KuaiRec.zip -d data/raw
+mv "data/raw/KuaiRec 2.0" data/raw/KuaiRec
+
 uv run python src/prepare_data.py     # builds the training and test tables
 
 # Checks and baselines
 uv run python src/test_metrics.py
 uv run python src/test_logq.py
 uv run python src/popularity.py
-uv run python src/taste_check.py      # the "similar users" method
+uv run python src/taste_check.py      # counting methods, including "similar users"
+```
 
+Training every model in the tables takes about 4 hours on the Apple-silicon
+laptop this was developed on. The scripts use the Apple GPU when there is
+one and the CPU otherwise. Scores vary slightly from run to run.
+
+<details>
+<summary>Commands for training the models, the tables, the demo and the label check</summary>
+
+```bash
 # The two main models, five runs each
 for s in 0 1 2 3 4; do
   uv run python src/train.py --variant skipped --no-features --epochs 30 --seed $s --name main_seed$s
@@ -424,7 +456,7 @@ for s in 1 2 3 4; do
   uv run python src/train.py --variant mixed --logq --no-features --epochs 12 --seed $s --name s7_mixed_logq_seed$s
 done
 
-# The comparison rows
+# The comparison rows (the first two are the first and second versions)
 uv run python src/train.py --variant inbatch --name inbatch
 uv run python src/train.py --variant hardneg --name hardneg
 uv run python src/train.py --variant inbatch --no-features --epochs 30 --name s7_inbatch
@@ -436,10 +468,19 @@ uv run python src/train.py --variant skipped --no-features --epochs 30 --label f
 uv run python src/final_report.py --group final
 uv run python src/demo.py
 
-# Optional: the label check. Download KuaiRand-Pure from https://kuairand.com
-# and extract it into data/raw/KuaiRand/
+# Optional: the label check on KuaiRand-Pure (a 47 MB download)
+mkdir -p data/download data/raw/KuaiRand
+curl -L -o data/download/KuaiRand-Pure.tar.gz https://zenodo.org/records/10439422/files/KuaiRand-Pure.tar.gz
+tar -xzf data/download/KuaiRand-Pure.tar.gz -C data/raw/KuaiRand
 uv run python -I src/kuairand_check.py
 ```
+
+Two rows cannot be reproduced exactly. The first and second versions were
+trained with an earlier form of `train.py` that kept the pass with the best
+recall@10. The script now keeps the pass with the best AUC, so a rerun of
+those two rows will differ a little from the table.
+
+</details>
 
 ## Files
 

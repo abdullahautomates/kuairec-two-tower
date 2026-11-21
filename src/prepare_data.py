@@ -2,10 +2,10 @@
 
 Each row is one (user, video) pair with a label: liked = 1 or 0.
 
-The "liked" rule (option B, length-aware), chosen in step 3:
+The "liked" rule (length-aware; it is option B in src/compare_labels.py):
   1. Split videos into groups of similar length: 100 equal-size groups, with
      any group spanning more than 25% (longest vs shortest) cut further,
-     keeping at least 25 videos per group.
+     keeping at least 25 videos per group. That gives 107 groups.
   2. Engagement of a pair = SUM of watch_ratio over all of that user's watches
      of that video (so rewatching counts).
   3. In each length group, the "bar" is the engagement only the top third of
@@ -119,7 +119,8 @@ def print_group_sizes(train, edges):
                                      pairs=("video_id", "size"))
     lo = np.maximum(edges[:-1], 0) / 1000
     hi = edges[1:] / 1000
-    sizes["range"] = [f"{lo[g]:.1f}s-{hi[g]:.1f}s" for g in sizes.index]
+    sizes["range"] = [f"{lo[g]:.1f}s and up" if np.isinf(hi[g])
+                      else f"{lo[g]:.1f}s-{hi[g]:.1f}s" for g in sizes.index]
     print(f"length groups: {len(sizes)} (with training data)")
     print("smallest groups by number of videos:")
     print(sizes.nsmallest(6, "videos").to_string(
@@ -158,7 +159,7 @@ def add_finished_label(train, test):
     """
     train["finished"] = (train["best_watch"] >= FINISHED).astype("int8")
     test["finished"] = (test["engagement"] >= FINISHED).astype("int8")
-    train.drop(columns="best_watch", inplace=True)
+    del train["best_watch"]   # it was only needed for "finished"
 
 
 def add_even_marking(test):
@@ -225,7 +226,7 @@ def main():
     edges = length_group_edges(train)
     section("LENGTH GROUPS")
     print_group_sizes(train, edges)
-    bars =train.groupby(pd.cut(train["video_duration"], edges, labels=False))[
+    bars = train.groupby(pd.cut(train["video_duration"], edges, labels=False))[
         "engagement"].quantile(1 - TOP_SHARE)
     add_liked_label(train, edges, bars)
     add_liked_label(test, edges, bars)

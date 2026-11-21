@@ -1,6 +1,9 @@
 [project]
 name = "kuairec-two-tower"
 version = "0.1.0"
+description = "A two-tower video retrieval model on the KuaiRec dataset, tested against popularity and a counting baseline"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.5.5",

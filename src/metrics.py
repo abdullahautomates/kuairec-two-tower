@@ -115,7 +115,7 @@ def split_test_users(test, seed=0):
     The final group never influences a decision, so its score is honest.
     A fixed seed gives the same split every run, in every step.
     """
-    users =np.array(sorted(test["user_id"].unique()))
+    users = np.array(sorted(test["user_id"].unique()))
     shuffled = np.random.default_rng(seed).permutation(users)
     half = len(shuffled) // 2
     return set(shuffled[:half].tolist()), set(shuffled[half:].tolist())

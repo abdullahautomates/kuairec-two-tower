@@ -10,7 +10,13 @@ For each, on the test table:
   - recall@10 of the "10 shortest videos for everyone" shortcut
 If a dumb length rule scores far above random, the label rewards length, not taste.
 
-Run:  uv run python -I src/compare_labels.py
+This script records how the label was chosen (B won). It uses the first form
+of B: 100 length groups holding equal numbers of videos. prepare_data.py later
+cut the widest groups further (107 groups), so the label the project uses
+differs slightly from the B printed here.
+
+Run after prepare_data.py (it reads the test table that script writes):
+    uv run python -I src/compare_labels.py
 """
 
 import sys
