@@ -55,6 +55,9 @@ OUT = ROOT / "outputs"
 KS = (10, 50, 100)
 SHORT_SECONDS = 5  # the short-video check agreed in step 5
 MAIN_RUNS = [f"main_seed{seed}" for seed in range(5)]
+# Seed 0 ran for 40 epochs to see the whole curve; its best epoch was 9.
+# Seeds 1-4 ran for 12 epochs, which covers that peak.
+LOGQ_RUNS = ["s7_mixed_logq"] + [f"s7_mixed_logq_seed{seed}" for seed in range(1, 5)]
 # (row name, saved runs in outputs/). Several runs = same recipe, other seeds.
 MODEL_ROWS = [
     ("model: in-batch (run 1)", ["inbatch"]),
@@ -62,9 +65,7 @@ MODEL_ROWS = [
     ("in-batch, IDs only", ["s7_inbatch"]),
     ("in-batch + logQ", ["s7_inbatch_logq"]),
     ("mixed", ["s7_mixed"]),
-    # Seed 0 ran for 40 epochs to see the whole curve; its best epoch was 9.
-    # Seeds 1-4 ran for 12 epochs, which covers that peak.
-    ("mixed + logQ", ["s7_mixed_logq"] + [f"s7_mixed_logq_seed{s}" for s in range(1, 5)]),
+    ("mixed + logQ", LOGQ_RUNS),
     ("model: liked vs skipped", MAIN_RUNS),
     ("same model, old label", ["oldlabel"]),
 ]
